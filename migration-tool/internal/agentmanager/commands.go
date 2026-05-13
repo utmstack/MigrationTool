@@ -7,7 +7,7 @@ import (
 
 const (
 	// Base URL for migrate_agent binaries in Google Cloud Storage
-	MigrateAgentBaseURL = "https://storage.googleapis.com/utmstack-updates"
+	MigrateAgentBaseURL = "https://storage.googleapis.com/utmstack-updates/migration-tool-v10-to-v11"
 )
 
 type PlatformInfo struct {
