@@ -3,8 +3,8 @@ package config
 import "time"
 
 const (
-	MigrationServiceName            = "UTMStackMigration"
-	MigrationServiceDisplayName     = "UTMStack Migration Service"
+	MigrationServiceName            = "UTMStackMigrateAgent"
+	MigrationServiceDisplayName     = "UTMStack Migrate Agent Service"
 	MigrationServiceDescription     = "Monitors and migrates UTMStack Agent from v10 to v11"
 	AgentServiceName                = "UTMStackAgent"
 	LogsCollectorServiceName        = "UTMStackModulesLogsCollector"
