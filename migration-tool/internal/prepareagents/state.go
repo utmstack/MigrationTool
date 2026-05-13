@@ -94,11 +94,29 @@ type Stats struct {
 	Gone     int
 }
 
-// AllDone returns true when there is nothing left for the loop to do.
-// Terminal states (deployed, skipped, gone) plus permanently failed agents (attempts >= MaxAttempts)
-// count as "done". Pending and offline agents do NOT count as done.
+// AllDone returns true when the discovery/deploy loop has nothing left to do
+// this run. Pending and Offline agents will still be picked up, so they keep
+// the loop alive. Failed agents that exhausted retries (attempts >= MaxAttempts)
+// no longer get scheduled, so they DO count as "loop is done with them" — but
+// "done" does not mean "successful". Use WasSuccessful / HasPermanentFailures
+// to interpret the outcome.
 func (s Stats) AllDone() bool {
 	return s.Pending == 0 && s.Offline == 0
+}
+
+// WasSuccessful returns true only when every known agent reached a non-failed
+// terminal state (Deployed / Skipped / Gone). This is the precondition that
+// must hold before recommending the operator continue with `upgrade`.
+func (s Stats) WasSuccessful() bool {
+	return s.Pending == 0 && s.Offline == 0 && s.Failed == 0
+}
+
+// HasPermanentFailures returns true when at least one agent is in StateFailed.
+// At the moment AllDone() also returns true, those failures are permanent
+// (no further retries scheduled), because actionable agents would have been
+// re-selected by SelectActionable before reaching this point.
+func (s Stats) HasPermanentFailures() bool {
+	return s.Failed > 0
 }
 
 // Active returns the count of agents that still need work from the loop.

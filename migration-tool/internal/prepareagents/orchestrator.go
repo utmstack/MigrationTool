@@ -19,6 +19,12 @@ const (
 	GracefulShutdownGrace    = 30 * time.Second
 )
 
+// ErrPermanentFailures is returned by Run when the deployment loop terminates
+// with at least one agent stuck in StateFailed after exhausting retries. The
+// loop did its job — it just could not deploy everywhere — and the caller
+// must NOT proceed to `upgrade` until those agents are resolved or skipped.
+var ErrPermanentFailures = errors.New("prepare-agents finished with permanently failed agents")
+
 // Config controls orchestrator behavior. Zero values fall back to defaults.
 type Config struct {
 	DiscoveryInterval time.Duration // default: DefaultDiscoveryInterval
@@ -67,7 +73,10 @@ func NewOrchestrator(cfg Config, store *Store, client *agentmanager.Client) *Orc
 // Run drives the deployment loop until completion, context cancellation, or fatal error.
 //
 // Returns:
-//   - nil on natural completion (Stats.AllDone() returns true)
+//   - nil on full success (Stats.WasSuccessful() returns true: every agent is
+//     Deployed / Skipped / Gone)
+//   - ErrPermanentFailures when the loop terminates naturally but at least one
+//     agent stayed in StateFailed after exhausting retries
 //   - context.Canceled / context.DeadlineExceeded on cancellation
 //   - a wrapped error if the AgentManager is unreachable for MaxConsecutiveListErrors cycles
 func (o *Orchestrator) Run(ctx context.Context) error {
@@ -135,6 +144,12 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			printProgress(stats)
 			if stats.AllDone() {
 				ui.Blank()
+				if stats.HasPermanentFailures() {
+					// Loop is done, but not in a good way: some agents are
+					// permanently failed and the operator must intervene
+					// before running `upgrade`.
+					return ErrPermanentFailures
+				}
 				ui.Success("All agents reached a terminal state — deployment complete")
 				return nil
 			}
