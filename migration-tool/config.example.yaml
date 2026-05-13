@@ -1,0 +1,60 @@
+# ============================================================================
+# UTMStack Migration Tool - Configuration Examples
+# ============================================================================
+# 
+# ============================================================================
+
+# ============================================================================
+# EXAMPLE 1: UPGRADE (In-Place V10 → V11)
+# ============================================================================
+# 
+# Option A: Local upgrade (run ON the V10 server)
+#   Just run: sudo ./utmstack_migration_tool upgrade
+#   No config file needed - everything is auto-detected!
+#
+# Option B: Remote upgrade (from your workstation)
+#   Uncomment below and use: sudo ./utmstack_migration_tool upgrade --config config.yaml
+
+# source:
+#   host: "192.168.1.100"          # V10 server IP
+#   ssh_user: "utmstack"           # SSH username
+#   ssh_password: "your-password"  # SSH password
+#   # ssh_private_key: "~/.ssh/id_rsa"  # Alternative: use SSH key
+
+# ============================================================================
+# EXAMPLE 2: MIGRATE (V10 → V11 on Different Servers)
+# ============================================================================
+# Usage: sudo ./utmstack_migration_tool migrate --config config.yaml
+
+source:
+  host: "192.168.1.100"            # V10 server IP
+  ssh_user: "utmstack"             # SSH username
+  ssh_password: "your-password"    # SSH password
+  # ssh_private_key: "~/.ssh/id_rsa"  # Alternative: use SSH key
+
+destination:
+  host: "192.168.1.200"            # V11 server IP
+  ssh_user: "utmstack"             # SSH username
+  ssh_password: "your-password"    # SSH password
+
+# ============================================================================
+# EXAMPLE 3: EXPORT ONLY
+# ============================================================================
+# Usage: sudo ./utmstack_migration_tool export --config config.yaml
+
+# source:
+#   host: "192.168.1.100"
+#   ssh_user: "utmstack"
+#   ssh_password: "your-password"
+
+# ============================================================================
+# EXAMPLE 4: IMPORT ONLY
+# ============================================================================
+# Usage: sudo ./utmstack_migration_tool import --config config.yaml --input backup.yml
+
+# destination:
+#   host: "192.168.1.200"
+#   ssh_user: "utmstack"
+#   ssh_password: "your-password"
+
+# ============================================================================

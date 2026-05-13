@@ -1,0 +1,58 @@
+//go:build windows
+
+package migration
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"os/signal"
+	"syscall"
+
+	"migrate_agent/utils"
+)
+
+// SelfUninstall spawns a detached process that runs the same binary with "uninstall" command.
+// This function does NOT return - it blocks until the uninstall process kills the service.
+func SelfUninstall() error {
+	if utils.Logger != nil {
+		utils.Logger.Info("Spawning self-uninstall process")
+	}
+
+	// Get the path to the current executable
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to get executable path: %w", err)
+	}
+
+	// Spawn the same binary with "uninstall" command, detached
+	cmd := exec.Command(execPath, "uninstall")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Stdin = nil
+
+	// Detach the process on Windows
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to spawn uninstall process: %w", err)
+	}
+
+	if utils.Logger != nil {
+		utils.Logger.Info("Self-uninstall process spawned (PID: %d), waiting for termination signal", cmd.Process.Pid)
+	}
+
+	// Wait for termination signal from the uninstall process (via sc stop)
+	// On Windows, SCM can kill processes directly, but this pattern is cleaner and consistent with Linux/Darwin
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+	<-sigChan
+
+	if utils.Logger != nil {
+		utils.Logger.Info("Received termination signal, exiting cleanly")
+	}
+	os.Exit(0)
+	return nil // unreachable, but keeps compiler happy
+}
