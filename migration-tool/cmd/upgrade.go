@@ -22,11 +22,7 @@ var (
 	upgradeSkipAgentCheck bool
 )
 
-// errUpgradeCancelled signals that the operator chose to abort the upgrade
-// (e.g. answered NO to the prepare-agents warning prompt). It is NOT a program
-// error — runUpgrade translates it into a clean exit with an informational
-// message instead of letting it bubble up to Execute()'s error printer.
-var errUpgradeCancelled = errors.New("upgrade cancelled by user")
+var errUserCancelled = errors.New("cancelled by user")
 
 var upgradeCmd = &cobra.Command{
 	Use:   "upgrade",
@@ -182,7 +178,7 @@ func ensureAgentsPrepared(agentManagerHost string) error {
 	ui.Blank()
 
 	if !ui.Confirm("Continue with the upgrade anyway?") {
-		return errUpgradeCancelled
+		return errUserCancelled
 	}
 	ui.Warning("Proceeding with incomplete agent deployment — orphaned agents will remain on V10")
 	return nil
@@ -222,7 +218,7 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 	}
 
 	if err := ensureAgentsPrepared(cfg.Source.Host); err != nil {
-		if errors.Is(err, errUpgradeCancelled) {
+		if errors.Is(err, errUserCancelled) {
 			// User chose to abort — not a program error.
 			ui.Blank()
 			ui.Info("Upgrade cancelled. Run 'utmstack_migration_tool prepare-agents' to")

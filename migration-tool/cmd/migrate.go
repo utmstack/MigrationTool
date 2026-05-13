@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,6 +60,20 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	ui.Success("Configuration loaded and validated")
+
+	// Same prepare-agents check used by `upgrade`. The agents register against
+	// the source AgentManager, so the state DB is keyed by cfg.Source.Host. If
+	// they were not pre-deployed they will stay orphaned on the source V10
+	// after the migration moves data to the destination V11.
+	if err := ensureAgentsPrepared(cfg.Source.Host); err != nil {
+		if errors.Is(err, errUserCancelled) {
+			ui.Blank()
+			ui.Info("Migration cancelled. Run 'utmstack_migration_tool prepare-agents' to")
+			ui.Info("resume the deployment of the pending or failed agents, then re-run migrate.")
+			return nil
+		}
+		return err
+	}
 
 	// Prepare data file
 	backupFile := migrateBackupFile
