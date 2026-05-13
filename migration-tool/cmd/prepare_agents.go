@@ -139,11 +139,25 @@ func runPrepareAgents(cmd *cobra.Command, args []string) error {
 
 	switch {
 	case runErr == nil:
-		// Natural completion.
+		// Full success — every agent deployed or in a non-failed terminal state.
 		ui.FinalSuccess("All agents reached a terminal state")
 		printFinalSummary(finalStats)
 		printNextStep()
 		return nil
+
+	case errors.Is(runErr, prepareagents.ErrPermanentFailures):
+		// Loop is done but at least one agent stayed in Failed after exhausting
+		// retries. Do NOT recommend running `upgrade` — those agents would be
+		// migrated without preparation, breaking the safety net.
+		ui.Blank()
+		ui.FinalError("prepare-agents finished with permanently failed agents")
+		printFinalSummary(finalStats)
+		ui.Blank()
+		ui.Warning(fmt.Sprintf("%d agent(s) failed permanently after %d attempts.",
+			finalStats.Failed, prepareagents.MaxAttempts))
+		ui.Info("Review the failures, fix the underlying issue, and run 'prepare-agents' again.")
+		ui.Info("Do NOT run 'upgrade' until every agent is Deployed, Skipped, or Gone.")
+		return runErr
 
 	case errors.Is(runErr, context.Canceled), errors.Is(runErr, context.DeadlineExceeded):
 		// User cancellation. Offer to mark non-terminal agents as skipped.
