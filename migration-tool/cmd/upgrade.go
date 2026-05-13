@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/config"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/domain"
+	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/prepareagents"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/upgrade"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/pkg/ui"
 )
@@ -19,6 +21,12 @@ var (
 	upgradeBackupFile     string
 	upgradeSkipAgentCheck bool
 )
+
+// errUpgradeCancelled signals that the operator chose to abort the upgrade
+// (e.g. answered NO to the prepare-agents warning prompt). It is NOT a program
+// error — runUpgrade translates it into a clean exit with an informational
+// message instead of letting it bubble up to Execute()'s error printer.
+var errUpgradeCancelled = errors.New("upgrade cancelled by user")
 
 var upgradeCmd = &cobra.Command{
 	Use:   "upgrade",
@@ -47,8 +55,16 @@ func init() {
 }
 
 // ensureAgentsPrepared verifies that the operator has run `prepare-agents` before
-// `upgrade`. The check is satisfied by the presence of agents-migration.db in the
-// current working directory (created and managed by the prepare-agents command).
+// `upgrade`. It opens the SQLite state database, reads its stats, and:
+//
+//   - Returns silently on success if every agent reached a non-failed terminal
+//     state (deployed / skipped / gone).
+//   - Returns a hard error if the database is missing, empty, corrupted, belongs
+//     to a different AgentManager, or has an unknown schema.
+//   - Prints a detailed summary and asks the operator for confirmation when
+//     agents are still pending/offline or permanently failed — letting them
+//     either proceed (and accept orphaned agents on V10) or abort and re-run
+//     `prepare-agents` first.
 //
 // The bypass flag --skip-agent-check exists for legitimate edge cases:
 //   - Test environments without UTMStack agents
@@ -57,39 +73,131 @@ func init() {
 //
 // Bypassing this check means accepting that any agent that did NOT receive the
 // migrate_agent will be left orphaned on V10 after the upgrade completes.
-func ensureAgentsPrepared() error {
+func ensureAgentsPrepared(agentManagerHost string) error {
 	if upgradeSkipAgentCheck {
 		ui.Warning("Skipping prepare-agents verification (--skip-agent-check)")
 		ui.Info("Agents that did not receive migrate_agent will remain on V10 after upgrade")
 		return nil
 	}
 
-	if _, err := os.Stat(prepareDBPath); err != nil {
+	dbPath := prepareDBPath
+	if dbPath == "" {
+		dbPath = DefaultStateDBFile
+	}
+
+	if _, err := os.Stat(dbPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			ui.Error(fmt.Sprintf("State database '%s' not found.", prepareDBPath))
+			ui.Error(fmt.Sprintf("State database '%s' not found.", dbPath))
 			ui.Info("Run 'utmstack_migration_tool prepare-agents' before this command,")
 			ui.Info("or pass --skip-agent-check if you have already deployed migrate_agent")
 			ui.Info("through other means and accept the consequences.")
-			return fmt.Errorf("prepare-agents has not been run (missing %s)", prepareDBPath)
+			return fmt.Errorf("prepare-agents has not been run (missing %s)", dbPath)
 		}
-		return fmt.Errorf("stat %s: %w", prepareDBPath, err)
+		return fmt.Errorf("stat %s: %w", dbPath, err)
 	}
-	ui.Success("prepare-agents state database found")
+
+	// Open the store — this also validates schema integrity, schema version,
+	// and that the DB was created against the same AgentManager host.
+	store, err := prepareagents.OpenStore(dbPath, agentManagerHost)
+	if err != nil {
+		switch {
+		case errors.Is(err, prepareagents.ErrDBCorrupted):
+			ui.Error("State database is corrupted.")
+			ui.Info("Move it aside and re-run 'prepare-agents' to rebuild the state.")
+		case errors.Is(err, prepareagents.ErrSchemaTooNew):
+			ui.Error("State database was created by a newer version of the tool.")
+			ui.Info("Update this binary or use the version that created the DB.")
+		case errors.Is(err, prepareagents.ErrAgentManagerMismatch):
+			ui.Error("State database belongs to a different AgentManager.")
+			ui.Info(fmt.Sprintf("Expected host: %s", agentManagerHost))
+			ui.Info("Move the DB aside or run 'upgrade' from the correct directory.")
+		default:
+			ui.Error(fmt.Sprintf("Failed to open state database: %v", err))
+		}
+		return err
+	}
+	defer func() {
+		if cerr := store.Close(); cerr != nil {
+			ui.Warning(fmt.Sprintf("Failed to close state DB: %v", cerr))
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stats, err := store.ComputeStats(ctx)
+	if err != nil {
+		return fmt.Errorf("read prepare-agents stats: %w", err)
+	}
+
+	if stats.Total == 0 {
+		ui.Error("State database exists but contains no agents.")
+		ui.Info("This usually means 'prepare-agents' was interrupted before discovery.")
+		ui.Info("Run 'utmstack_migration_tool prepare-agents' to populate the database.")
+		return fmt.Errorf("prepare-agents DB is empty")
+	}
+
+	if stats.WasSuccessful() {
+		ui.Success(fmt.Sprintf(
+			"prepare-agents complete: %d deployed, %d skipped, %d gone (total %d)",
+			stats.Deployed, stats.Skipped, stats.Gone, stats.Total,
+		))
+		return nil
+	}
+
+	// Something is unfinished. Show the operator what's pending and let them decide.
+	ui.Blank()
+	ui.Warning("prepare-agents did NOT finish cleanly:")
+	ui.Detail("Total agents", fmt.Sprintf("%d", stats.Total))
+	ui.Detail("Deployed", fmt.Sprintf("%d", stats.Deployed))
+	if stats.Pending > 0 {
+		ui.Detail("Pending (never attempted)", fmt.Sprintf("%d", stats.Pending))
+	}
+	if stats.Offline > 0 {
+		ui.Detail("Offline (not reachable)", fmt.Sprintf("%d", stats.Offline))
+	}
+	if stats.Failed > 0 {
+		ui.Detail("Failed (retries exhausted)", fmt.Sprintf("%d", stats.Failed))
+		// List the failed agents so the operator sees who they are.
+		if failed, ferr := store.ListByState(ctx, prepareagents.StateFailed); ferr == nil {
+			for _, a := range failed {
+				ui.Detail(fmt.Sprintf("  - %s (%s)", a.Hostname, a.IP), a.LastError)
+			}
+		}
+	}
+	if stats.Skipped > 0 {
+		ui.Detail("Skipped", fmt.Sprintf("%d", stats.Skipped))
+	}
+	if stats.Gone > 0 {
+		ui.Detail("Gone", fmt.Sprintf("%d", stats.Gone))
+	}
+
+	ui.Blank()
+	ui.Info("If you continue, agents NOT in 'deployed' state will be orphaned on V10")
+	ui.Info("after the upgrade completes. They will keep running V10 until the")
+	ui.Info("migrate_agent is installed on them manually.")
+	ui.Info("")
+	ui.Info("Recommended: run 'utmstack_migration_tool prepare-agents' again to")
+	ui.Info("resume the deployment for the pending/failed agents before upgrading.")
+	ui.Blank()
+
+	if !ui.Confirm("Continue with the upgrade anyway?") {
+		return errUpgradeCancelled
+	}
+	ui.Warning("Proceeding with incomplete agent deployment — orphaned agents will remain on V10")
 	return nil
 }
 
 func runUpgrade(cmd *cobra.Command, args []string) error {
 	ui.Header("UTMStack Upgrade — V10 to V11")
 
-	if err := ensureAgentsPrepared(); err != nil {
-		return err
-	}
-
+	// Load config FIRST — ensureAgentsPrepared needs the AgentManager host to
+	// validate that the state DB belongs to this installation and to inspect
+	// per-agent state.
 	var cfg *domain.MigrationConfig
 	var err error
 
 	if upgradeConfigFile != "" {
-		// Load from file if provided
 		ui.Step(1, 2, "Loading configuration from file")
 		cfg, err = config.LoadConfig(upgradeConfigFile)
 		if err != nil {
@@ -102,7 +210,6 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 		}
 		ui.Success("Configuration loaded")
 	} else {
-		// Auto-detect for local upgrade
 		ui.Step(1, 2, "Auto-detecting local configuration")
 		cfg, err = config.LoadLocalUpgradeConfig()
 		if err != nil {
@@ -112,6 +219,17 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		ui.Success("Configuration detected")
+	}
+
+	if err := ensureAgentsPrepared(cfg.Source.Host); err != nil {
+		if errors.Is(err, errUpgradeCancelled) {
+			// User chose to abort — not a program error.
+			ui.Blank()
+			ui.Info("Upgrade cancelled. Run 'utmstack_migration_tool prepare-agents' to")
+			ui.Info("resume the deployment of the pending or failed agents, then re-run upgrade.")
+			return nil
+		}
+		return err
 	}
 
 	backupFile := upgradeBackupFile

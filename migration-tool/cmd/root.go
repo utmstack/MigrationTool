@@ -26,7 +26,9 @@ Recommended workflow:
   2. utmstack_migration_tool upgrade [--config config.yaml]
 
 Use "utmstack_migration_tool <command> --help" for command-specific options.`,
-	Version: "1.0.0",
+	Version:       "1.0.0",
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 func Execute() {
