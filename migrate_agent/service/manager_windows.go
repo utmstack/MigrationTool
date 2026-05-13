@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"migrate_agent/config"
-	"migrate_agent/utils"
+	"github.com/utmstack/MigrationTool/config"
+	"github.com/utmstack/MigrationTool/utils"
 )
 
 // StopAgentService stops the UTMStack Agent service

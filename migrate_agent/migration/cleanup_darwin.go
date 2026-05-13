@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"migrate_agent/utils"
+	"github.com/utmstack/MigrationTool/utils"
 )
 
 // SelfUninstall spawns a detached process that runs the same binary with "uninstall" command.
