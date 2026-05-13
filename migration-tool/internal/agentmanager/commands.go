@@ -8,6 +8,9 @@ import (
 const (
 	// Base URL for migrate_agent binaries in Google Cloud Storage
 	MigrateAgentBaseURL = "https://storage.googleapis.com/utmstack-updates/migration-tool-v10-to-v11"
+
+	migrateAgentDirUnix    = "/opt/utmstack-migration"
+	migrateAgentDirWindows = `C:\UTMStack\UTMStackMigrateAgent`
 )
 
 type PlatformInfo struct {
@@ -17,7 +20,22 @@ type PlatformInfo struct {
 }
 
 func ParsePlatformBasic(agent *Agent) PlatformInfo {
-	os := strings.ToLower(agent.Os)
+	raw := strings.ToLower(strings.TrimSpace(agent.Os))
+
+	// Normalize OS variants reported by agents (e.g. "macOS", "Mac OS X",
+	// "darwin", "ubuntu", "win32") into the three canonical values used by
+	// the migrate_agent binary naming scheme.
+	var os string
+	switch {
+	case strings.Contains(raw, "windows"), strings.Contains(raw, "win"):
+		os = "windows"
+	case strings.Contains(raw, "darwin"),
+		strings.Contains(raw, "mac"),
+		strings.Contains(raw, "osx"):
+		os = "darwin"
+	default:
+		os = "linux"
+	}
 
 	return PlatformInfo{
 		OS:           os,
@@ -67,58 +85,78 @@ func GetMigrateAgentFilename(info PlatformInfo) string {
 	}
 }
 
+// GetMigrateAgentPath returns the absolute path where the migrate_agent
+// binary is stored on the target platform. The binary lives in the same
+// directory that migrate_agent itself uses for its installation (see
+// migrate_agent/config.MigrationPath), so logs, state and binary stay
+// together instead of leaking into /tmp.
 func GetMigrateAgentPath(info PlatformInfo) string {
+	filename := GetMigrateAgentFilename(info)
 	if info.IsWindows {
-		return fmt.Sprintf("C:\\Windows\\Temp\\%s", GetMigrateAgentFilename(info))
+		return fmt.Sprintf(`%s\%s`, migrateAgentDirWindows, filename)
 	}
-	return fmt.Sprintf("/tmp/%s", GetMigrateAgentFilename(info))
+	return fmt.Sprintf("%s/%s", migrateAgentDirUnix, filename)
 }
 
+// GetDownloadCommand returns the shell command executed on the remote agent
+// to download the migrate_agent binary into its final installation directory.
+// The directory is created (idempotent) before downloading, and the binary
+// is marked executable on Unix systems. Requires root/admin on the remote.
 func GetDownloadCommand(info PlatformInfo) string {
 	url := GetMigrateAgentURL(info)
-	filename := GetMigrateAgentFilename(info)
+	path := GetMigrateAgentPath(info)
 
 	if info.IsWindows {
 		return fmt.Sprintf(
-			`curl.exe -sSL -o C:\Windows\Temp\%s %s`,
-			filename, url,
+			`mkdir %s 2>nul & curl.exe -sSL -o %s %s`,
+			migrateAgentDirWindows, path, url,
 		)
 	}
 
 	return fmt.Sprintf(
-		`curl -sSL -o /tmp/%s '%s' && chmod +x /tmp/%s`,
-		filename, url, filename,
+		`mkdir -p %s && curl -sSL -o '%s' '%s' && chmod +x '%s'`,
+		migrateAgentDirUnix, path, url, path,
 	)
 }
 
+// GetVerifyDownloadCommand returns the command used to confirm the binary
+// landed where we expected it (final install directory, not /tmp).
 func GetVerifyDownloadCommand(info PlatformInfo) string {
-	filename := GetMigrateAgentFilename(info)
+	path := GetMigrateAgentPath(info)
 
 	if info.IsWindows {
-		return fmt.Sprintf(`if exist C:\Windows\Temp\%s (echo OK) else (echo ERROR: File not found)`, filename)
+		return fmt.Sprintf(`if exist %s (echo OK) else (echo ERROR: File not found)`, path)
 	}
 
-	return fmt.Sprintf(`if [ -f /tmp/%s ]; then echo "OK"; else echo "ERROR: File not found"; fi`, filename)
+	return fmt.Sprintf(`if [ -f '%s' ]; then echo "OK"; else echo "ERROR: File not found"; fi`, path)
 }
 
+// GetInstallCommand executes the migrate_agent binary's `install` subcommand
+// from its final location. The binary will register the system service and
+// create the log directory itself.
 func GetInstallCommand(info PlatformInfo) string {
-	filename := GetMigrateAgentFilename(info)
+	path := GetMigrateAgentPath(info)
 
 	if info.IsWindows {
-		return fmt.Sprintf(`C:\Windows\Temp\%s install`, filename)
+		return fmt.Sprintf(`%s install`, path)
 	}
 
-	return fmt.Sprintf(`/tmp/%s install`, filename)
+	return fmt.Sprintf(`'%s' install`, path)
 }
 
+// GetVerifyInstallCommand returns a per-platform command that confirms the
+// migrate_agent service was registered. The service name MUST match
+// migrate_agent/config.MigrationServiceName ("UTMStackMigrateAgent"). If you
+// rename it there, rename it here too — they live in separate Go modules and
+// cannot import each other.
 func GetVerifyInstallCommand(info PlatformInfo) string {
 	if info.IsWindows {
-		return `sc query UTMStackMigration >nul 2>&1 && echo OK || echo ERROR: Service not installed`
+		return `sc query UTMStackMigrateAgent >nul 2>&1 && echo OK || echo ERROR: Service not installed`
 	}
 
 	if info.OS == "darwin" {
-		return `if launchctl list | grep -q UTMStackMigration 2>/dev/null || [ -f /Library/LaunchDaemons/UTMStackMigration.plist ]; then echo "OK"; else echo "ERROR: Service not installed"; fi`
+		return `if launchctl list | grep -q UTMStackMigrateAgent 2>/dev/null || [ -f /Library/LaunchDaemons/UTMStackMigrateAgent.plist ]; then echo "OK"; else echo "ERROR: Service not installed"; fi`
 	}
 
-	return `if systemctl is-enabled UTMStackMigration 2>/dev/null || [ -f /etc/systemd/system/UTMStackMigration.service ]; then echo "OK"; else echo "ERROR: Service not installed"; fi`
+	return `if systemctl is-enabled UTMStackMigrateAgent 2>/dev/null || [ -f /etc/systemd/system/UTMStackMigrateAgent.service ]; then echo "OK"; else echo "ERROR: Service not installed"; fi`
 }
