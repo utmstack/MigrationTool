@@ -32,11 +32,6 @@ func LaunchdPlistPath() string {
 	return "/Library/LaunchDaemons/UTMStackAgent.plist"
 }
 
-// MigrationLaunchdPlistPath returns the path to the migration service launchd plist
-func MigrationLaunchdPlistPath() string {
-	return "/Library/LaunchDaemons/com.utmstack.migration.plist"
-}
-
 // SystemdServicePath returns empty on macOS (not used, here for interface compatibility)
 func SystemdServicePath() string {
 	return ""

@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/kardianos/service"
 	"github.com/spf13/cobra"
@@ -10,6 +11,17 @@ import (
 	"github.com/utmstack/MigrationTool/config"
 	svc "github.com/utmstack/MigrationTool/service"
 )
+
+func manualStartHint() string {
+	switch runtime.GOOS {
+	case "windows":
+		return fmt.Sprintf("sc start %s", config.MigrationServiceName)
+	case "darwin":
+		return fmt.Sprintf("launchctl load /Library/LaunchDaemons/%s.plist", config.MigrationServiceName)
+	default:
+		return fmt.Sprintf("systemctl start %s", config.MigrationServiceName)
+	}
+}
 
 var installCmd = &cobra.Command{
 	Use:   "install",
@@ -45,7 +57,7 @@ var installCmd = &cobra.Command{
 		err = s.Start()
 		if err != nil {
 			fmt.Printf("Warning: failed to start service: %v\n", err)
-			fmt.Println("You can start it manually with: systemctl start UTMStackMigration")
+			fmt.Printf("You can start it manually with: %s\n", manualStartHint())
 		} else {
 			fmt.Println("Migration service started successfully")
 		}
