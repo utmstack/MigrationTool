@@ -12,6 +12,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  actions: write
 
 jobs:
   # =====================================================================
@@ -63,14 +64,20 @@ jobs:
           go build -trimpath -ldflags="-s -w" -o "$OUT" .
           ls -lh "$OUT"
 
-      # Linux: final artifact directly (nothing to sign)
-      - name: Upload Linux artifact
+      # Linux: intermediate per-arch bundle, merged by the merge_linux job
+      - name: Stage Linux binary
+        if: matrix.goos == 'linux'
+        run: |
+          mkdir -p staging-linux
+          cp migrate_agent/migrate_agent_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.ext }} staging-linux/
+
+      - name: Upload Linux binary (intermediate)
         if: matrix.goos == 'linux'
         uses: actions/upload-artifact@v4
         with:
-          name: migrate_agent-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: migrate_agent/migrate_agent_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.ext }}
-          retention-days: 7
+          name: migrate_agent-linux-${{ matrix.goarch }}-intermediate
+          path: staging-linux/
+          retention-days: 1
           if-no-files-found: error
 
       # Windows: temporary unsigned bundle, picked up by the signing job
@@ -106,7 +113,36 @@ jobs:
           if-no-files-found: error
 
   # =====================================================================
-  # 2. Merge Windows unsigned binaries into a single artifact
+  # 2. Merge Linux binaries into a single final artifact
+  #    (Linux is not signed, so this is the final output)
+  # =====================================================================
+  merge_linux:
+    name: Merge Linux binaries
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download amd64
+        uses: actions/download-artifact@v4
+        with:
+          name: migrate_agent-linux-amd64-intermediate
+          path: ./merged
+      - name: Download arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: migrate_agent-linux-arm64-intermediate
+          path: ./merged
+      - name: List contents
+        run: ls -la ./merged
+      - name: Upload final Linux bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: migrate_agent_linux
+          path: ./merged/
+          retention-days: 7
+          if-no-files-found: error
+
+  # =====================================================================
+  # 3. Merge Windows unsigned binaries into a single artifact
   #    (reusable-sign-agent.yml expects ONE artifact with all binaries)
   # =====================================================================
   merge_windows_unsigned:
@@ -136,7 +172,7 @@ jobs:
           if-no-files-found: error
 
   # =====================================================================
-  # 3. Sign Windows binaries (jsign + GCP KMS)
+  # 4. Sign Windows binaries (jsign + GCP KMS)
   # =====================================================================
   sign_windows:
     name: Sign Windows binaries
@@ -146,7 +182,7 @@ jobs:
     with:
       os: windows
       artifact_name: migrate_agent-windows-unsigned
-      signed_artifact_name: migrate_agent-windows-signed
+      signed_artifact_name: migrate_agent_windows
       gcp_project_id: ${{ vars.GCP_PROJECT_PROD }}
       kms_location: ${{ vars.KMS_KEYRING_LOCATION }}
       kms_keyring: ${{ vars.KMS_KEYRING_NAME }}
@@ -160,7 +196,7 @@ jobs:
     secrets: inherit
 
   # =====================================================================
-  # 4. Sign + notarize macOS binary
+  # 5. Sign + notarize macOS binary
   # =====================================================================
   sign_macos:
     name: Sign macOS binary
@@ -170,8 +206,59 @@ jobs:
     with:
       os: macos
       artifact_name: migrate_agent-darwin-arm64-unsigned
-      signed_artifact_name: migrate_agent-darwin-signed
+      signed_artifact_name: migrate_agent_darwin_arm64
       retention_days: 7
       binaries: |
         migrate_agent_darwin_arm64
     secrets: inherit
+
+  # =====================================================================
+  # 6. Clean up intermediate artifacts so they don't clutter
+  #    the run's artifact list.
+  # =====================================================================
+  cleanup_intermediate:
+    name: Clean up intermediate artifacts
+    needs: [merge_linux, sign_windows, sign_macos]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Delete intermediate artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TARGETS=(
+            "migrate_agent-linux-amd64-intermediate"
+            "migrate_agent-linux-arm64-intermediate"
+            "migrate_agent-windows-amd64-unsigned"
+            "migrate_agent-windows-arm64-unsigned"
+            "migrate_agent-darwin-arm64-unsigned"
+            "migrate_agent-windows-unsigned"
+          )
+
+          echo "→ Listing artifacts for run $RUN_ID"
+          artifacts_json=$(gh api \
+            "repos/${REPO}/actions/runs/${RUN_ID}/artifacts" \
+            --paginate)
+
+          for name in "${TARGETS[@]}"; do
+            ids=$(echo "$artifacts_json" | jq -r \
+              --arg name "$name" \
+              '.artifacts[] | select(.name == $name) | .id')
+
+            if [ -z "$ids" ]; then
+              echo "· $name: not found, skipping"
+              continue
+            fi
+
+            for id in $ids; do
+              echo "→ Deleting $name (id=$id)"
+              gh api -X DELETE "repos/${REPO}/actions/artifacts/${id}" \
+                && echo "  ✓ deleted" \
+                || echo "  ✗ failed (continuing)"
+            done
+          done
+
+          echo "✓ Cleanup done"
