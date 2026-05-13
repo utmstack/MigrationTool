@@ -1,0 +1,42 @@
+name: Build migration-tool (manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build linux/amd64
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: migration-tool/go.mod
+          cache: true
+          cache-dependency-path: migration-tool/go.sum
+
+      - name: Build binary
+        working-directory: migration-tool
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: |
+          OUT="utmstack_migration_tool"
+          echo "→ Building $OUT"
+          go build -trimpath -ldflags="-s -w" -o "$OUT" .
+          ls -lh "$OUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: utmstack_migration_tool
+          path: migration-tool/utmstack_migration_tool
+          retention-days: 7
+          if-no-files-found: error

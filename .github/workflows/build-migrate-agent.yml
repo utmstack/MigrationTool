@@ -1,0 +1,177 @@
+name: Build migrate_agent (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: "Sign Windows binaries via GCP KMS and notarize macOS binaries via Apple notarytool."
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # =====================================================================
+  # 1. Build all platforms (no signing yet)
+  # =====================================================================
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            ext: ""
+          - goos: linux
+            goarch: arm64
+            ext: ""
+          - goos: windows
+            goarch: amd64
+            ext: ".exe"
+          - goos: windows
+            goarch: arm64
+            ext: ".exe"
+          - goos: darwin
+            goarch: arm64
+            ext: ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: migrate_agent/go.mod
+          cache: true
+          cache-dependency-path: migrate_agent/go.sum
+
+      - name: Build binary
+        working-directory: migrate_agent
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          OUT="migrate_agent_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.ext }}"
+          echo "→ Building $OUT"
+          go build -trimpath -ldflags="-s -w" -o "$OUT" .
+          ls -lh "$OUT"
+
+      # Linux: final artifact directly (nothing to sign)
+      - name: Upload Linux artifact
+        if: matrix.goos == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: migrate_agent-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: migrate_agent/migrate_agent_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.ext }}
+          retention-days: 7
+          if-no-files-found: error
+
+      # Windows: temporary unsigned bundle, picked up by the signing job
+      - name: Stage unsigned Windows binary
+        if: matrix.goos == 'windows'
+        run: |
+          mkdir -p staging-windows
+          cp migrate_agent/migrate_agent_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.ext }} staging-windows/
+
+      - name: Upload unsigned Windows binary (intermediate)
+        if: matrix.goos == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: migrate_agent-windows-${{ matrix.goarch }}-unsigned
+          path: staging-windows/
+          retention-days: 1
+          if-no-files-found: error
+
+      # macOS: temporary unsigned bundle, picked up by the signing job
+      - name: Stage unsigned macOS binary
+        if: matrix.goos == 'darwin'
+        run: |
+          mkdir -p staging-darwin
+          cp migrate_agent/migrate_agent_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.ext }} staging-darwin/
+
+      - name: Upload unsigned macOS binary (intermediate)
+        if: matrix.goos == 'darwin'
+        uses: actions/upload-artifact@v4
+        with:
+          name: migrate_agent-darwin-${{ matrix.goarch }}-unsigned
+          path: staging-darwin/
+          retention-days: 1
+          if-no-files-found: error
+
+  # =====================================================================
+  # 2. Merge Windows unsigned binaries into a single artifact
+  #    (reusable-sign-agent.yml expects ONE artifact with all binaries)
+  # =====================================================================
+  merge_windows_unsigned:
+    name: Merge unsigned Windows binaries
+    needs: build
+    if: ${{ inputs.sign }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download amd64
+        uses: actions/download-artifact@v4
+        with:
+          name: migrate_agent-windows-amd64-unsigned
+          path: ./merged
+      - name: Download arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: migrate_agent-windows-arm64-unsigned
+          path: ./merged
+      - name: List contents
+        run: ls -la ./merged
+      - name: Upload merged unsigned bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: migrate_agent-windows-unsigned
+          path: ./merged/
+          retention-days: 1
+          if-no-files-found: error
+
+  # =====================================================================
+  # 3. Sign Windows binaries (jsign + GCP KMS)
+  # =====================================================================
+  sign_windows:
+    name: Sign Windows binaries
+    needs: merge_windows_unsigned
+    if: ${{ inputs.sign }}
+    uses: ./.github/workflows/reusable-sign-agent.yml
+    with:
+      os: windows
+      artifact_name: migrate_agent-windows-unsigned
+      signed_artifact_name: migrate_agent-windows-signed
+      gcp_project_id: ${{ vars.GCP_PROJECT_PROD }}
+      kms_location: ${{ vars.KMS_KEYRING_LOCATION }}
+      kms_keyring: ${{ vars.KMS_KEYRING_NAME }}
+      kms_key: ${{ vars.KMS_KEY_NAME }}
+      sign_name: "UTMStack MigrationTool Agent"
+      sign_url: "https://utmstack.com"
+      retention_days: 7
+      binaries: |
+        migrate_agent_windows_amd64.exe
+        migrate_agent_windows_arm64.exe
+    secrets: inherit
+
+  # =====================================================================
+  # 4. Sign + notarize macOS binary
+  # =====================================================================
+  sign_macos:
+    name: Sign macOS binary
+    needs: build
+    if: ${{ inputs.sign }}
+    uses: ./.github/workflows/reusable-sign-agent.yml
+    with:
+      os: macos
+      artifact_name: migrate_agent-darwin-arm64-unsigned
+      signed_artifact_name: migrate_agent-darwin-signed
+      retention_days: 7
+      binaries: |
+        migrate_agent_darwin_arm64
+    secrets: inherit
