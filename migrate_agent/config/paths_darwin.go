@@ -2,9 +2,9 @@
 
 package config
 
-// AgentPath returns the UTMStack agent installation directory
+// AgentPath returns the UTMStack agent installation directory.
 func AgentPath() string {
-	return "/opt/utmstack-macos-agent/"
+	return "/opt/utmstack/"
 }
 
 // BinaryName returns the agent binary name for this platform (macOS arm64 only)
