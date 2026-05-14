@@ -22,4 +22,5 @@ var PreservedFiles = []string{
 	"log-collector-config.json",
 	"version.json",
 	"uuid.yml",
+	"utmstack-collector-mac", // macOS-only log collector binary
 }
