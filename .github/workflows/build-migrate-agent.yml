@@ -1,13 +1,13 @@
-name: Build migrate_agent (manual)
+name: Build migrate_agent
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'migrate_agent/**'
+      - '.github/workflows/build-migrate-agent.yml'
+      - '.github/workflows/reusable-sign-agent.yml'
   workflow_dispatch:
-    inputs:
-      sign:
-        description: "Sign Windows binaries via GCP KMS and notarize macOS binaries via Apple notarytool."
-        required: false
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -64,7 +64,7 @@ jobs:
           go build -trimpath -ldflags="-s -w" -o "$OUT" .
           ls -lh "$OUT"
 
-      # Linux: intermediate per-arch bundle, merged by the merge_linux job
+      # Linux: intermediate per-arch bundle, picked up by the GCS upload job
       - name: Stage Linux binary
         if: matrix.goos == 'linux'
         run: |
@@ -113,42 +113,12 @@ jobs:
           if-no-files-found: error
 
   # =====================================================================
-  # 2. Merge Linux binaries into a single final artifact
-  #    (Linux is not signed, so this is the final output)
-  # =====================================================================
-  merge_linux:
-    name: Merge Linux binaries
-    needs: build
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Download amd64
-        uses: actions/download-artifact@v4
-        with:
-          name: migrate_agent-linux-amd64-intermediate
-          path: ./merged
-      - name: Download arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: migrate_agent-linux-arm64-intermediate
-          path: ./merged
-      - name: List contents
-        run: ls -la ./merged
-      - name: Upload final Linux bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: migrate_agent_linux
-          path: ./merged/
-          retention-days: 7
-          if-no-files-found: error
-
-  # =====================================================================
-  # 3. Merge Windows unsigned binaries into a single artifact
+  # 2. Merge Windows unsigned binaries into a single artifact
   #    (reusable-sign-agent.yml expects ONE artifact with all binaries)
   # =====================================================================
   merge_windows_unsigned:
     name: Merge unsigned Windows binaries
     needs: build
-    if: ${{ inputs.sign }}
     runs-on: ubuntu-24.04
     steps:
       - name: Download amd64
@@ -172,12 +142,11 @@ jobs:
           if-no-files-found: error
 
   # =====================================================================
-  # 4. Sign Windows binaries (jsign + GCP KMS)
+  # 3. Sign Windows binaries (jsign + GCP KMS)
   # =====================================================================
   sign_windows:
     name: Sign Windows binaries
     needs: merge_windows_unsigned
-    if: ${{ inputs.sign }}
     uses: ./.github/workflows/reusable-sign-agent.yml
     with:
       os: windows
@@ -189,36 +158,91 @@ jobs:
       kms_key: ${{ vars.KMS_KEY_NAME }}
       sign_name: "UTMStack MigrationTool Agent"
       sign_url: "https://utmstack.com"
-      retention_days: 7
+      retention_days: 1
       binaries: |
         migrate_agent_windows_amd64.exe
         migrate_agent_windows_arm64.exe
     secrets: inherit
 
   # =====================================================================
-  # 5. Sign + notarize macOS binary
+  # 4. Sign + notarize macOS binary
   # =====================================================================
   sign_macos:
     name: Sign macOS binary
     needs: build
-    if: ${{ inputs.sign }}
     uses: ./.github/workflows/reusable-sign-agent.yml
     with:
       os: macos
       artifact_name: migrate_agent-darwin-arm64-unsigned
       signed_artifact_name: migrate_agent_darwin_arm64
-      retention_days: 7
+      retention_days: 1
       binaries: |
         migrate_agent_darwin_arm64
     secrets: inherit
 
   # =====================================================================
+  # 5. Upload all final binaries to GCS
+  #    Bucket layout consumed by migration-tool/internal/agentmanager:
+  #      gs://utmstack-updates/migration-tool-v10-to-v11/<filename>
+  # =====================================================================
+  upload_to_gcs:
+    name: Upload binaries to GCS
+    needs: [build, sign_windows, sign_macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download Linux amd64
+        uses: actions/download-artifact@v4
+        with:
+          name: migrate_agent-linux-amd64-intermediate
+          path: ./out
+
+      - name: Download Linux arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: migrate_agent-linux-arm64-intermediate
+          path: ./out
+
+      - name: Download signed Windows binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: migrate_agent_windows
+          path: ./out
+
+      - name: Download signed macOS binary
+        uses: actions/download-artifact@v4
+        with:
+          name: migrate_agent_darwin_arm64
+          path: ./out
+
+      - name: List binaries to upload
+        run: ls -lh ./out
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCS_UPLOADER_SA_KEY }}
+
+      - name: Upload to gs://utmstack-updates/migration-tool-v10-to-v11
+        uses: google-github-actions/upload-cloud-storage@v2
+        with:
+          path: ./out
+          destination: utmstack-updates/migration-tool-v10-to-v11
+          parent: false
+          process_gcloudignore: false
+          headers: |
+            cache-control: no-cache, max-age=0
+
+  # =====================================================================
   # 6. Clean up intermediate artifacts so they don't clutter
-  #    the run's artifact list.
+  #    the run's artifact list. The signed artifacts (migrate_agent_windows,
+  #    migrate_agent_darwin_arm64) are kept short-lived for debugging.
   # =====================================================================
   cleanup_intermediate:
     name: Clean up intermediate artifacts
-    needs: [merge_linux, sign_windows, sign_macos]
+    needs: [upload_to_gcs]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     steps:
