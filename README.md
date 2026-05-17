@@ -152,6 +152,66 @@ sudo ./utmstack_migration_tool import --config config.yaml --input backup.yml
 
 ---
 
+## Known issues
+
+A few things that can trip you up after a migration — and how to fix them.
+
+### The panel stays stuck on "Welcome to UTMStack"
+
+When the migration finishes, open the panel in your browser. If it never gets
+past the **"Welcome to UTMStack"** loading screen, restart the frontend
+container:
+
+```bash
+sudo docker service update --force utmstack_frontend
+```
+
+Give it a minute and reload the page.
+
+### Agents fail to install with "invalid connection key"
+
+Old connection keys don't survive the migration. If agents won't install and
+you see **`invalid connection key`** in the logs, rotate the key from the
+panel:
+
+```
+https://<your-instance>/app-management/settings/connection-key
+```
+
+Generate a new key there, then retry the agent installation with the new key.
+
+### Mode C — keep the same IP / DNS as your old V10 server
+
+If you migrated to a **brand-new V11 server** (Mode C), the new instance
+**must end up reachable on the same IP address or DNS name** that your old
+V10 server used. Reason: every agent out there is hardcoded to talk to that
+address — change it and they all go silent.
+
+Not sure what address the agents are using? On the **old V10 instance**, go
+to the **Integrations** page and look at the **Linux agent install command** —
+the IP or domain in that command is what your agents expect. Make sure the
+new V11 server answers on that exact address (swap IPs, update DNS, etc.)
+before pointing users at it.
+
+### Back up your certificates before upgrading
+
+The upgrade **regenerates the TLS certificates** under `/utmstack/cert/`.
+If you're using custom certs (or just want to keep the existing ones), copy
+them somewhere safe **before** running `upgrade`:
+
+```bash
+sudo cp -r /utmstack/cert/ ~/utmstack-cert-backup/
+```
+
+After the upgrade, put them back in `/utmstack/cert/` and restart the stack.
+
+> Note: in **Mode C** (server-to-server) the certificates are **not** copied
+> over either — the new V11 server will have its own fresh certs. Same fix:
+> copy them from the old server and drop them into `/utmstack/cert/` on the
+> new one.
+
+---
+
 ## Full documentation
 
 For all flags, troubleshooting, the full config file reference, and edge
