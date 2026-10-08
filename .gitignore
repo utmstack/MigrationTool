@@ -1,0 +1,19 @@
+# Reference checkouts — local only, never committed
+UTMStack_v11/
+UTMStack_v12/
+
+# CodeGraph index
+.codegraph/
+
+# Migration tool artifacts
+utmstack-migration-*.yml
+.utmstack-export-*.tmp
+
+# Binaries
+/utmstack_migration_tool
+/migrate_agent
+*.exe
+
+# OS
+.DS_Store
+odd/
