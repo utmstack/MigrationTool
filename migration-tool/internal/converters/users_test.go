@@ -3,6 +3,7 @@ package converters
 import (
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
 )
 
@@ -28,7 +29,7 @@ func TestMapUserRow(t *testing.T) {
 				"image_url":     "https://corp.com/jane.png",
 			},
 			want: userRow{
-				ID:           "42",
+				ID:           userUUIDForV11ID("42"),
 				TenantID:     DefaultTenantID,
 				Email:        "jane@corp.com",
 				Name:         "Jane Doe",
@@ -51,7 +52,7 @@ func TestMapUserRow(t *testing.T) {
 				"lang_key":      "es",
 			},
 			want: userRow{
-				ID:           "7",
+				ID:           userUUIDForV11ID("7"),
 				TenantID:     DefaultTenantID,
 				Email:        "sam",
 				Name:         "Sam Lee",
@@ -68,7 +69,7 @@ func TestMapUserRow(t *testing.T) {
 				"activated": true,
 			},
 			want: userRow{
-				ID:       "1",
+				ID:       userUUIDForV11ID("1"),
 				TenantID: DefaultTenantID,
 				Email:    "admin",
 				Name:     "admin",
@@ -83,7 +84,7 @@ func TestMapUserRow(t *testing.T) {
 				"activated": "false",
 			},
 			want: userRow{
-				ID:       "2",
+				ID:       userUUIDForV11ID("2"),
 				TenantID: DefaultTenantID,
 				Email:    "bob",
 				Name:     "bob",
@@ -101,7 +102,7 @@ func TestMapUserRow(t *testing.T) {
 				"activated":  "true",
 			},
 			want: userRow{
-				ID:       "9",
+				ID:       userUUIDForV11ID("9"),
 				TenantID: DefaultTenantID,
 				Email:    "nina@corp.com",
 				Name:     "nina",
@@ -120,7 +121,7 @@ func TestMapUserRow(t *testing.T) {
 				"activated":     false,
 			},
 			want: userRow{
-				ID:           "10",
+				ID:           userUUIDForV11ID("10"),
 				TenantID:     DefaultTenantID,
 				Email:        "pwd@corp.com",
 				Name:         "P W",
@@ -137,6 +138,20 @@ func TestMapUserRow(t *testing.T) {
 				t.Errorf("mapUserRow() = %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestUserUUIDForV11IDIsDeterministicAndDistinct(t *testing.T) {
+	a := userUUIDForV11ID("42")
+	b := userUUIDForV11ID("42")
+	if a != b {
+		t.Fatalf("userUUIDForV11ID not deterministic: %q != %q", a, b)
+	}
+	if _, err := uuid.Parse(a); err != nil {
+		t.Fatalf("userUUIDForV11ID not a valid uuid: %v", err)
+	}
+	if userUUIDForV11ID("42") == userUUIDForV11ID("43") {
+		t.Fatal("distinct v11 ids must map to distinct uuids")
 	}
 }
 
