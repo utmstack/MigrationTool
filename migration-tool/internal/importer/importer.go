@@ -1,8 +1,10 @@
 package importer
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
@@ -28,10 +30,26 @@ func New(cfg domain.InstanceConfig, totalTables int) *Importer {
 	}
 }
 
-func (i *Importer) Import(inputFile string) error {
+// Result is the per-table outcome of an import.
+type Result struct {
+	Imported map[string]int
+	Skipped  []string
+}
+
+func (r Result) PrintSummary() {
+	ui.Message("Import summary: %d tables imported, %d skipped", len(r.Imported), len(r.Skipped))
+	if len(r.Skipped) > 0 {
+		ui.Message("skipped (no converter): %s", strings.Join(r.Skipped, ", "))
+	}
+}
+
+func (i *Importer) Import(inputFile string) (Result, error) {
+	result := Result{Imported: map[string]int{}}
+	ctx := context.Background()
+
 	backup, err := readFromFile(inputFile)
 	if err != nil {
-		return fmt.Errorf("failed to read backup file: %w", err)
+		return result, fmt.Errorf("failed to read backup file: %w", err)
 	}
 
 	if len(backup.Databases) == 0 && len(backup.Tables) > 0 {
@@ -42,12 +60,12 @@ func (i *Importer) Import(inputFile string) error {
 			},
 		}
 	} else if len(backup.Databases) == 0 {
-		return fmt.Errorf("backup file contains no data")
+		return result, fmt.Errorf("backup file contains no data")
 	}
 
 	if backup.InternalKey != "" {
 		if err := yaml.WriteInternalKey(config.UTMStackYMLPath, backup.InternalKey); err != nil {
-			return fmt.Errorf("failed to write internal key: %w", err)
+			return result, fmt.Errorf("failed to write internal key: %w", err)
 		}
 	}
 
@@ -59,33 +77,24 @@ func (i *Importer) Import(inputFile string) error {
 	for _, dbBackup := range backup.Databases {
 		db, err := postgres.Connect(i.instanceCfg, dbBackup.Database)
 		if err != nil {
-			return fmt.Errorf("failed to connect to database %s: %w", dbBackup.Database, err)
+			return result, fmt.Errorf("failed to connect to database %s: %w", dbBackup.Database, err)
 		}
 
 		for _, tableData := range dbBackup.Tables {
+			conv, ok := Get(tableData.TableName)
+			if !ok {
+				log.Printf("WARNING: no converter for table %s - data NOT imported", tableData.TableName)
+				result.Skipped = append(result.Skipped, tableData.TableName)
+				i.progress.IncrementWithLabel(tableData.TableName)
+				continue
+			}
 
-			exists, err := postgres.TableExists(db, tableData.TableName)
+			n, err := conv.Import(ctx, tableData.Rows, db)
 			if err != nil {
 				db.Close()
-				return fmt.Errorf("failed to check if table exists: %w", err)
+				return result, fmt.Errorf("failed to import table %s: %w", tableData.TableName, err)
 			}
-			if !exists {
-				i.progress.IncrementWithLabel(tableData.TableName)
-				continue // Skip tables that don't exist in destination
-			}
-
-			if err := i.importTable(db, tableData); err != nil {
-				db.Close()
-				return fmt.Errorf("failed to import table %s: %w", tableData.TableName, err)
-			}
-
-			// Reset sequences after import to avoid "duplicate key" errors
-			// when inserting new rows (sequences need to be updated to MAX(id) + 1)
-			if err := postgres.ResetTableSequences(db, tableData.TableName); err != nil {
-				db.Close()
-				return fmt.Errorf("failed to reset sequences for table %s: %w", tableData.TableName, err)
-			}
-
+			result.Imported[tableData.TableName] = n
 			i.progress.IncrementWithLabel(tableData.TableName)
 		}
 
@@ -93,7 +102,7 @@ func (i *Importer) Import(inputFile string) error {
 	}
 
 	i.progress.FinishWithMessage("Import completed")
-	return nil
+	return result, nil
 }
 
 func readFromFile(filename string) (*domain.BackupData, error) {
@@ -110,7 +119,7 @@ func readFromFile(filename string) (*domain.BackupData, error) {
 	return &backup, nil
 }
 
-func (i *Importer) importTable(db *sql.DB, tableData *domain.TableData) error {
+func (i *Importer) importGeneric(db *sql.DB, tableData *domain.TableData) error {
 	if len(tableData.Rows) == 0 {
 		return nil
 	}
@@ -153,9 +162,8 @@ func (i *Importer) importTable(db *sql.DB, tableData *domain.TableData) error {
 	var columnsList string
 	var placeholdersList string
 
-	// Priorizar UNIQUE constraints sobre PRIMARY KEY
-	// Las UNIQUE constraints representan la lógica de negocio (cómo se identifica realmente un registro)
-	// mientras que PK suele ser solo un ID técnico auto-increment
+	// UNIQUE constraints identify a record by business key; the PK is a
+	// technical surrogate and loses that meaning, so UNIQUE wins.
 	if len(uniqueConstraints) > 0 {
 		conflictColumns = uniqueConstraints[0]
 	} else if len(primaryKeys) > 0 {
@@ -187,7 +195,6 @@ func (i *Importer) importTable(db *sql.DB, tableData *domain.TableData) error {
 
 		updateSet := make([]string, 0)
 		for _, col := range columnsToInsert {
-			// Excluir columnas que son parte del conflicto
 			isConflictCol := false
 			for _, cc := range conflictColumns {
 				if col == cc {
@@ -196,7 +203,6 @@ func (i *Importer) importTable(db *sql.DB, tableData *domain.TableData) error {
 				}
 			}
 
-			// Excluir columnas que son PRIMARY KEY para evitar errores de foreign key
 			isPrimaryKey := false
 			for _, pk := range primaryKeys {
 				if col == pk {
@@ -205,7 +211,8 @@ func (i *Importer) importTable(db *sql.DB, tableData *domain.TableData) error {
 				}
 			}
 
-			// Solo actualizar si NO es columna de conflicto Y NO es PRIMARY KEY
+			// Never touch conflict columns or the PK in the UPDATE SET: it would
+			// violate the uniqueness constraint or break foreign keys.
 			if !isConflictCol && !isPrimaryKey {
 				updateSet = append(updateSet, fmt.Sprintf(`"%s" = EXCLUDED."%s"`, col, col))
 			}

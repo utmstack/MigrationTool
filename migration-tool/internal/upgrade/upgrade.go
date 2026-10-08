@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/config"
+	_ "github.com/utmstack/UTMStackEnterprise/migration-tool/internal/converters"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/domain"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/exporter"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
@@ -239,9 +240,11 @@ func (u *Upgrader) importData() error {
 	destCfg := u.sourceCfg
 
 	imp := importer.New(destCfg, u.totalTables)
-	if err := imp.Import(u.backupFile); err != nil {
+	result, err := imp.Import(u.backupFile)
+	if err != nil {
 		return err
 	}
+	result.PrintSummary()
 
 	ui.StartOperation("Running post-installation queries")
 	dbConn, err := postgres.Connect(destCfg, config.DefaultDatabase)

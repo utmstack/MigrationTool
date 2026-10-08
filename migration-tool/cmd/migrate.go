@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/config"
+	_ "github.com/utmstack/UTMStackEnterprise/migration-tool/internal/converters"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/exporter"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/postgres"
@@ -270,10 +271,12 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	ui.Step(6, 8, "Importing data to destination database")
 	imp := importer.New(cfg.Destination, totalTables)
 
-	if err := imp.Import(backupFile); err != nil {
+	result, err := imp.Import(backupFile)
+	if err != nil {
 		ui.Error(fmt.Sprintf("Import failed: %v", err))
 		return err
 	}
+	result.PrintSummary()
 
 	// Run post-install queries
 	ui.Step(7, 8, "Running post-installation queries")
