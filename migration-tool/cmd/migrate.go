@@ -26,10 +26,10 @@ var (
 var migrateCmd = &cobra.Command{
 	Use:   "migrate",
 	Short: "Full migration between two instances (export + import)",
-	Long: `Migrate data from UTMStack V10 to V11 between two separate instances.
+	Long: `Migrate data from UTMStack V11 to V12 between two separate instances.
 
-This command exports data from the source V10 instance and imports it 
-into the destination V11 instance in a single operation.
+This command exports data from the source V11 instance and imports it 
+into the destination V12 instance in a single operation.
 
 Requires PostgreSQL connectivity to both instances. SSH is optional 
 but recommended for security credential synchronization.`,
@@ -63,8 +63,8 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 
 	// Same prepare-agents check used by `upgrade`. The agents register against
 	// the source AgentManager, so the state DB is keyed by cfg.Source.Host. If
-	// they were not pre-deployed they will stay orphaned on the source V10
-	// after the migration moves data to the destination V11.
+	// they were not pre-deployed they will stay orphaned on the source V11
+	// after the migration moves data to the destination V12.
 	if err := ensureAgentsPrepared(cfg.Source.Host); err != nil {
 		if errors.Is(err, errUserCancelled) {
 			ui.Blank()

@@ -25,8 +25,8 @@ var (
 
 var importCmd = &cobra.Command{
 	Use:   "import",
-	Short: "Import data file into V11",
-	Long: `Import data from a YAML file into UTMStack V11 instance.
+	Short: "Import data file into V12",
+	Long: `Import data from a YAML file into UTMStack V12 instance.
 
 The data file should be created using the export command.
 SSH access is optional but enables security credential synchronization.`,
@@ -222,7 +222,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 	ui.NextSteps([]string{
 		"Restart UTMStack services: docker stack deploy -c compose.yml utmstack",
 		"Verify services are running: docker service ls",
-		"Test the V11 instance",
+		"Test the V12 instance",
 	})
 
 	return nil

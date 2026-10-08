@@ -26,16 +26,16 @@ var errUserCancelled = errors.New("cancelled by user")
 
 var upgradeCmd = &cobra.Command{
 	Use:   "upgrade",
-	Short: "In-place upgrade from V10 to V11 (destructive)",
-	Long: `Perform an in-place upgrade from UTMStack V10 to V11.
+	Short: "In-place upgrade from V11 to V12 (destructive)",
+	Long: `Perform an in-place upgrade from UTMStack V11 to V12.
 
-WARNING: This is a DESTRUCTIVE operation. V10 will be completely removed.
+WARNING: This is a DESTRUCTIVE operation. V11 will be completely removed.
 
 When run locally (without --config), the tool auto-detects PostgreSQL 
 credentials from compose.yml and executes commands directly.
 
 For remote upgrades, provide a config file with SSH credentials.`,
-	Example: `  # Local upgrade (run this ON the V10 instance)
+	Example: `  # Local upgrade (run this ON the V11 instance)
   utmstack_migration_tool upgrade
 
   # Remote upgrade (requires SSH credentials in config)
@@ -59,7 +59,7 @@ func init() {
 //     to a different AgentManager, or has an unknown schema.
 //   - Prints a detailed summary and asks the operator for confirmation when
 //     agents are still pending/offline or permanently failed — letting them
-//     either proceed (and accept orphaned agents on V10) or abort and re-run
+//     either proceed (and accept orphaned agents on V11) or abort and re-run
 //     `prepare-agents` first.
 //
 // The bypass flag --skip-agent-check exists for legitimate edge cases:
@@ -68,11 +68,11 @@ func init() {
 //   - Recovery scenarios where the state DB is unavailable but the deploy is known done
 //
 // Bypassing this check means accepting that any agent that did NOT receive the
-// migrate_agent will be left orphaned on V10 after the upgrade completes.
+// migrate_agent will be left orphaned on V11 after the upgrade completes.
 func ensureAgentsPrepared(agentManagerHost string) error {
 	if upgradeSkipAgentCheck {
 		ui.Warning("Skipping prepare-agents verification (--skip-agent-check)")
-		ui.Info("Agents that did not receive migrate_agent will remain on V10 after upgrade")
+		ui.Info("Agents that did not receive migrate_agent will remain on V11 after upgrade")
 		return nil
 	}
 
@@ -169,8 +169,8 @@ func ensureAgentsPrepared(agentManagerHost string) error {
 	}
 
 	ui.Blank()
-	ui.Info("If you continue, agents NOT in 'deployed' state will be orphaned on V10")
-	ui.Info("after the upgrade completes. They will keep running V10 until the")
+	ui.Info("If you continue, agents NOT in 'deployed' state will be orphaned on V11")
+	ui.Info("after the upgrade completes. They will keep running V11 until the")
 	ui.Info("migrate_agent is installed on them manually.")
 	ui.Info("")
 	ui.Info("Recommended: run 'utmstack_migration_tool prepare-agents' again to")
@@ -180,12 +180,12 @@ func ensureAgentsPrepared(agentManagerHost string) error {
 	if !ui.Confirm("Continue with the upgrade anyway?") {
 		return errUserCancelled
 	}
-	ui.Warning("Proceeding with incomplete agent deployment — orphaned agents will remain on V10")
+	ui.Warning("Proceeding with incomplete agent deployment — orphaned agents will remain on V11")
 	return nil
 }
 
 func runUpgrade(cmd *cobra.Command, args []string) error {
-	ui.Header("UTMStack Upgrade — V10 to V11")
+	ui.Header("UTMStack Upgrade — V11 to V12")
 
 	// Load config FIRST — ensureAgentsPrepared needs the AgentManager host to
 	// validate that the state DB belongs to this installation and to inspect
@@ -210,7 +210,7 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 		cfg, err = config.LoadLocalUpgradeConfig()
 		if err != nil {
 			ui.Error(fmt.Sprintf("Failed to auto-detect configuration: %v", err))
-			ui.Info("Make sure you're running this on a UTMStack V10 instance")
+			ui.Info("Make sure you're running this on a UTMStack V11 instance")
 			ui.Info("Or provide a config file with --config")
 			return err
 		}

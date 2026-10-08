@@ -213,7 +213,7 @@ func loadPrepareConfig() (*domain.MigrationConfig, bool, error) {
 	cfg, err := config.LoadLocalUpgradeConfig()
 	if err != nil {
 		hintIfPermissionDenied(err, true)
-		ui.Info("Make sure you're running this on a UTMStack V10 instance")
+		ui.Info("Make sure you're running this on a UTMStack V11 instance")
 		ui.Info("Or provide a config file with --config")
 		return nil, false, fmt.Errorf("auto-detect configuration: %w", err)
 	}
@@ -225,7 +225,7 @@ func loadPrepareConfig() (*domain.MigrationConfig, bool, error) {
 // the process lacks privileges to read /root/utmstack.yml or /root/compose.yml.
 //
 // This is the most common failure mode for a first-time user running
-// `prepare-agents` directly on a V10 instance without sudo. Without this hint,
+// `prepare-agents` directly on a V11 instance without sudo. Without this hint,
 // they see a raw "permission denied" trace and have no idea they need root.
 //
 // We only emit the hint in local mode — for SSH the failure has different causes
@@ -242,7 +242,7 @@ func hintIfPermissionDenied(err error, isLocal bool) {
 	bin := executableNameForHint()
 	ui.Blank()
 	ui.Warning("Permission denied while reading local UTMStack files")
-	ui.Info(fmt.Sprintf("This command needs root access on V10 instances. Try: sudo %s prepare-agents",
+	ui.Info(fmt.Sprintf("This command needs root access on V11 instances. Try: sudo %s prepare-agents",
 		bin))
 }
 
@@ -312,7 +312,7 @@ func printFinalSummary(s prepareagents.Stats) {
 
 func printNextStep() {
 	ui.NextSteps([]string{
-		"Run 'utmstack_migration_tool upgrade' to upgrade the instance (V10 → V11)",
+		"Run 'utmstack_migration_tool upgrade' to upgrade the instance (V11 → V12)",
 	})
 }
 

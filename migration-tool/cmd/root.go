@@ -9,8 +9,8 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "utmstack_migration_tool",
-	Short: "UTMStack Migration Tool — V10 to V11",
-	Long: `UTMStack Migration Tool — V10 to V11
+	Short: "UTMStack Migration Tool — V11 to V12",
+	Long: `UTMStack Migration Tool — V11 to V12
 
 Migrate your UTMStack data safely and automatically.
 
@@ -18,8 +18,8 @@ Commands:
   prepare-agents   Pre-deploy migrate_agent to every UTMStack agent (run BEFORE upgrade)
   upgrade          In-place upgrade on a single instance (destructive)
   migrate          Full migration between two instances (export + import)
-  export           Export V10 data to file
-  import           Import data file into V11
+  export           Export V11 data to file
+  import           Import data file into V12
 
 Recommended workflow:
   1. utmstack_migration_tool prepare-agents --config config.yaml

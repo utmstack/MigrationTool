@@ -20,10 +20,10 @@ var (
 
 var exportCmd = &cobra.Command{
 	Use:   "export",
-	Short: "Export V10 data to file",
-	Long: `Export data from UTMStack V10 instance to a YAML file.
+	Short: "Export V11 data to file",
+	Long: `Export data from UTMStack V11 instance to a YAML file.
 
-The exported file can be imported to a V11 instance using the import command.
+The exported file can be imported to a V12 instance using the import command.
 SSH access is optional but enables security credential extraction.`,
 	Example: `  # Export with default filename
   utmstack_migration_tool export --config config.yaml
@@ -182,7 +182,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 	ui.FinalSuccess("Export completed successfully")
 
 	ui.NextSteps([]string{
-		fmt.Sprintf("Import to V11: utmstack_migration_tool import --config config.yaml --input %s", outputFile),
+		fmt.Sprintf("Import to V12: utmstack_migration_tool import --config config.yaml --input %s", outputFile),
 	})
 
 	return nil

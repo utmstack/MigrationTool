@@ -7,8 +7,8 @@ import (
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/pkg/ui"
 )
 
-func (u *Upgrader) installV11() error {
-	ui.SubHeader("Phase 4: Install UTMStack V11")
+func (u *Upgrader) installV12() error {
+	ui.SubHeader("Phase 4: Install UTMStack V12")
 	ui.Blank()
 
 	homeDir := config.GetHomeDir(u.sourceCfg.SSHUser)

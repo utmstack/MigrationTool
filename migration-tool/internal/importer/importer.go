@@ -16,17 +16,9 @@ import (
 )
 
 type Importer struct {
-	instanceCfg  domain.InstanceConfig
-	totalTables  int
-	moduleMapper *ModuleMapper
-	progress     *ui.Progress
-}
-
-// Tables that require special handling with module ID remapping
-var moduleRelatedTables = map[string]bool{
-	"utm_module":                     true,
-	"utm_module_group":               true,
-	"utm_module_group_configuration": true,
+	instanceCfg domain.InstanceConfig
+	totalTables int
+	progress    *ui.Progress
 }
 
 func New(cfg domain.InstanceConfig, totalTables int) *Importer {
@@ -70,11 +62,6 @@ func (i *Importer) Import(inputFile string) error {
 			return fmt.Errorf("failed to connect to database %s: %w", dbBackup.Database, err)
 		}
 
-		// Initialize module mapper for utmstack database
-		if dbBackup.Database == config.DefaultDatabase {
-			i.moduleMapper = NewModuleMapper(db)
-		}
-
 		for _, tableData := range dbBackup.Tables {
 
 			exists, err := postgres.TableExists(db, tableData.TableName)
@@ -87,17 +74,9 @@ func (i *Importer) Import(inputFile string) error {
 				continue // Skip tables that don't exist in destination
 			}
 
-			// Use special handling for module-related tables
-			if moduleRelatedTables[tableData.TableName] {
-				if err := i.importModuleRelatedTable(tableData); err != nil {
-					db.Close()
-					return fmt.Errorf("failed to import table %s: %w", tableData.TableName, err)
-				}
-			} else {
-				if err := i.importTable(db, tableData); err != nil {
-					db.Close()
-					return fmt.Errorf("failed to import table %s: %w", tableData.TableName, err)
-				}
+			if err := i.importTable(db, tableData); err != nil {
+				db.Close()
+				return fmt.Errorf("failed to import table %s: %w", tableData.TableName, err)
 			}
 
 			// Reset sequences after import to avoid "duplicate key" errors
@@ -129,24 +108,6 @@ func readFromFile(filename string) (*domain.BackupData, error) {
 	}
 
 	return &backup, nil
-}
-
-// importModuleRelatedTable handles tables that need module ID remapping
-func (i *Importer) importModuleRelatedTable(tableData *domain.TableData) error {
-	if i.moduleMapper == nil {
-		return fmt.Errorf("module mapper not initialized")
-	}
-
-	switch tableData.TableName {
-	case "utm_module":
-		return i.moduleMapper.ImportModules(tableData)
-	case "utm_module_group":
-		return i.moduleMapper.ImportModuleGroups(tableData)
-	case "utm_module_group_configuration":
-		return i.moduleMapper.ImportModuleGroupConfigurations(tableData)
-	default:
-		return fmt.Errorf("unknown module-related table: %s", tableData.TableName)
-	}
 }
 
 func (i *Importer) importTable(db *sql.DB, tableData *domain.TableData) error {

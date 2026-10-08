@@ -7,7 +7,7 @@ import (
 )
 
 func (u *Upgrader) cleanupInstance() error {
-	ui.SubHeader("Phase 3: Cleanup V10")
+	ui.SubHeader("Phase 3: Cleanup V11")
 	ui.Blank()
 
 	commands := []struct {

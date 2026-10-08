@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	InstallerURL         = "https://github.com/utmstack/UTMStack/releases/latest/download/installer"
+	InstallerURL         = "https://github.com/utmstack/UTMStack/releases/latest/download/installer-v12" // TODO: confirm V12 installer asset name with the release pipeline
 	SSHReconnectAttempts = 30
 	SSHReconnectDelay    = 10 * time.Second
 	PostInstallWaitTime  = 60 * time.Second
@@ -94,9 +94,9 @@ func (u *Upgrader) RunUpgrade() error {
 		return err
 	}
 
-	// Step 5: Install V11
-	if err := u.installV11(); err != nil {
-		ui.Error(fmt.Sprintf("V11 installation failed: %v", err))
+	// Step 5: Install V12
+	if err := u.installV12(); err != nil {
+		ui.Error(fmt.Sprintf("V12 installation failed: %v", err))
 		return err
 	}
 
@@ -164,7 +164,7 @@ func (u *Upgrader) RunUpgrade() error {
 
 	ui.NextSteps([]string{
 		"Verify services are running: docker service ls",
-		"Test the V11 instance",
+		"Test the V12 instance",
 		fmt.Sprintf("Data file saved at: %s", u.backupFile),
 	})
 
@@ -172,7 +172,7 @@ func (u *Upgrader) RunUpgrade() error {
 }
 
 func (u *Upgrader) validateAndConfirm() error {
-	if !ui.ConfirmDangerous("This will remove UTMStack V10 and install V11. All data will be migrated.") {
+	if !ui.ConfirmDangerous("This will remove UTMStack V11 and install V12. All data will be migrated.") {
 		return fmt.Errorf("upgrade cancelled by user")
 	}
 
