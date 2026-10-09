@@ -31,11 +31,25 @@ source:
   ssh_user: "utmstack"             # SSH username
   ssh_password: "your-password"    # SSH password
   # ssh_private_key: "~/.ssh/id_rsa"  # Alternative: use SSH key
+  # port: 5432                       # PostgreSQL port (default: 5432)
+  # user: "postgres"                 # PostgreSQL user (default: postgres)
+  # password: ""                     # PostgreSQL password (auto-detected from compose.yml if empty)
+  # sslmode: "disable"               # PostgreSQL SSL mode (default: disable)
+  # ssh_port: 22                     # SSH port (default: 22)
 
 destination:
   host: "192.168.1.200"            # V12 server IP
   ssh_user: "utmstack"             # SSH username
   ssh_password: "your-password"    # SSH password
+  # ssh_private_key: "~/.ssh/id_rsa"  # Alternative: use SSH key
+  # port: 5432                       # PostgreSQL port (default: 5432)
+  # user: "postgres"                 # PostgreSQL user (default: postgres)
+  # password: ""                     # PostgreSQL password (auto-detected from compose.yml if empty)
+  # sslmode: "disable"               # PostgreSQL SSL mode (default: disable)
+  # ssh_port: 22                     # SSH port (default: 22)
+  # Directory where V12 reads the migrated integration YAMLs
+  # (default: /utmstack/events-engine-workdir/pipeline)
+  # integrations_config_dir: "/utmstack/events-engine-workdir/pipeline"
 
 # ============================================================================
 # EXAMPLE 3: EXPORT ONLY
@@ -56,5 +70,6 @@ destination:
 #   host: "192.168.1.200"
 #   ssh_user: "utmstack"
 #   ssh_password: "your-password"
+#   # integrations_config_dir: "/utmstack/events-engine-workdir/pipeline"
 
 # ============================================================================
