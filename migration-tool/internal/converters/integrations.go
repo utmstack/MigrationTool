@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	goyaml "gopkg.in/yaml.v3"
@@ -23,6 +24,8 @@ func SetIntegrationsConfigDir(dir string) {
 	}
 }
 
+// pluginNames mirrors V12's repository.CodeSchemaProvider set: only these
+// module families are configurable in V12 and loaded from YAML files.
 var pluginNames = map[string]string{
 	"AWS_IAM_USER": "aws",
 	"AZURE":        "azure",
@@ -33,11 +36,11 @@ var pluginNames = map[string]string{
 	"SOPHOS":       "sophos",
 }
 
-func pluginKey(integration string) string {
-	if name, ok := pluginNames[strings.ToUpper(integration)]; ok {
+func pluginKey(moduleName string) string {
+	if name, ok := pluginNames[strings.ToUpper(moduleName)]; ok {
 		return name
 	}
-	return strings.ToLower(integration)
+	return strings.ToLower(moduleName)
 }
 
 type tenantConfig struct {
@@ -61,88 +64,80 @@ type pluginEntry struct {
 
 type integrationsConverter struct{}
 
-func (integrationsConverter) SrcTable() string { return "utm_integration" }
+// SrcTable anchors this converter in the cross-table pass; ImportAll
+// consumes utm_module, utm_module_group and utm_module_group_configuration.
+func (integrationsConverter) SrcTable() string { return "utm_module_group" }
 
-func (c integrationsConverter) Import(ctx context.Context, rows []map[string]interface{}, destDB *sql.DB) (int, error) {
+func (integrationsConverter) Import(ctx context.Context, rows []map[string]interface{}, destDB *sql.DB) (int, error) {
 	return 0, nil
 }
 
 func (c integrationsConverter) ImportAll(ctx context.Context, tables map[string][]map[string]any, destDB *sql.DB) (map[string]int, error) {
 	imported := map[string]int{}
 
-	integrations := tables["utm_integration"]
-	confByIntegration := buildConfIndex(tables["utm_integration_conf"])
-	moduleNameByID := buildModuleIndex(tables["utm_server_module"])
+	modulesByID := buildModuleNameIndex(tables["utm_module"])
+	groups := tables["utm_module_group"]
+	confsByGroup := buildGroupConfIndex(tables["utm_module_group_configuration"])
 
 	groupsByPlugin := map[string][]configGroup{}
-	count := 0
-	confCount := 0
+	migrated := 0
 
-	for _, src := range integrations {
-		integrationName := fieldString(src, "integration_name")
-		if integrationName == "" {
-			continue
-		}
-		moduleID := fieldString(src, "module_id")
-		moduleName := moduleNameByID[moduleID]
+	sorted := append([]map[string]any(nil), groups...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return fieldString(sorted[i], "id") < fieldString(sorted[j], "id")
+	})
+
+	for _, g := range sorted {
+		groupID := fieldString(g, "id")
+		moduleID := fieldString(g, "module_id")
+		moduleName := modulesByID[moduleID]
 		if moduleName == "" {
-			log.Printf("converter: integrations: integration %q has unknown module_id %s, skipping", integrationName, moduleID)
+			log.Printf("converter: integrations: group %s (%q) has unknown module_id %s, skipping",
+				groupID, fieldString(g, "group_name"), moduleID)
+			continue
+		}
+		if _, ok := pluginNames[strings.ToUpper(moduleName)]; !ok {
+			log.Printf("converter: integrations: group %s (%q, module %s) is not a V12 plugin family, skipping",
+				groupID, fieldString(g, "group_name"), moduleName)
 			continue
 		}
 
-		desc := fieldString(src, "integration_description")
-		config := confByIntegration[fieldString(src, "id")]
-		if config == nil {
-			config = map[string]string{}
-		}
-		for k, v := range config {
-			if v == "*****" {
-				config[k] = ""
+		conf := confsByGroup[groupID]
+		config := map[string]string{}
+		for k, v := range conf {
+			if v == "" {
+				continue
 			}
+			config[k] = v
 		}
 
 		key := pluginKey(moduleName)
 		groupsByPlugin[key] = append(groupsByPlugin[key], configGroup{
-			Name:        integrationName,
-			Description: desc,
+			Name:        fieldString(g, "group_name"),
+			Description: fieldString(g, "group_description"),
 			Config:      config,
 		})
-		confCount += len(config)
-		count++
+		migrated++
 	}
 
-	for key, groups := range groupsByPlugin {
-		if err := mergeGroupsIntoFile(filepath.Join(integrationsConfigDir, "system_plugins_"+key+".yaml"), key, groups); err != nil {
+	for key, gs := range groupsByPlugin {
+		sort.Slice(gs, func(i, j int) bool { return gs[i].Name < gs[j].Name })
+		if err := mergeGroupsIntoFile(filepath.Join(integrationsConfigDir, "system_plugins_"+key+".yaml"), key, gs); err != nil {
 			return imported, fmt.Errorf("integrations: write %s: %w", key, err)
 		}
 	}
 
-	if count > 0 {
-		log.Printf("converter: integrations: wrote %d integration config group(s) to %s", count, integrationsConfigDir)
+	if migrated > 0 {
+		log.Printf("converter: integrations: wrote %d group config(s) to %s", migrated, integrationsConfigDir)
 	}
-	imported["utm_integration"] = count
-	imported["utm_integration_conf"] = confCount
-	imported["utm_server_module"] = len(moduleNameByID)
+	imported["utm_module"] = len(modulesByID)
+	imported["utm_module_group"] = migrated
+	imported["utm_module_group_configuration"] = len(tables["utm_module_group_configuration"])
 	return imported, nil
 }
 
-func buildConfIndex(rows []map[string]any) map[string]map[string]string {
-	idx := map[string]map[string]string{}
-	for _, r := range rows {
-		id := fieldString(r, "integration_id")
-		short := fieldString(r, "conf_short")
-		if id == "" || short == "" {
-			continue
-		}
-		if idx[id] == nil {
-			idx[id] = map[string]string{}
-		}
-		idx[id][short] = fieldString(r, "conf_value")
-	}
-	return idx
-}
-
-func buildModuleIndex(rows []map[string]any) map[string]string {
+// buildModuleNameIndex maps utm_module.id → module_name.
+func buildModuleNameIndex(rows []map[string]any) map[string]string {
 	idx := map[string]string{}
 	for _, r := range rows {
 		id := fieldString(r, "id")
@@ -150,6 +145,26 @@ func buildModuleIndex(rows []map[string]any) map[string]string {
 		if id != "" && name != "" {
 			idx[id] = name
 		}
+	}
+	return idx
+}
+
+// buildGroupConfIndex maps utm_module_group_configuration.group_id →
+// conf_key → conf_value. Values are ciphertext for password/file types
+// (encrypted at save time in V11 with the same cipher V12 uses); they copy
+// verbatim.
+func buildGroupConfIndex(rows []map[string]any) map[string]map[string]string {
+	idx := map[string]map[string]string{}
+	for _, r := range rows {
+		gid := fieldString(r, "group_id")
+		key := fieldString(r, "conf_key")
+		if gid == "" || key == "" {
+			continue
+		}
+		if idx[gid] == nil {
+			idx[gid] = map[string]string{}
+		}
+		idx[gid][key] = fieldString(r, "conf_value")
 	}
 	return idx
 }
