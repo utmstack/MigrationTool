@@ -80,22 +80,56 @@ func (i *Importer) Import(inputFile string) (Result, error) {
 			return result, fmt.Errorf("failed to connect to database %s: %w", dbBackup.Database, err)
 		}
 
-		for _, tableData := range dbBackup.Tables {
-			conv, ok := Get(tableData.TableName)
-			if !ok {
-				log.Printf("WARNING: no converter for table %s - data NOT imported", tableData.TableName)
-				result.Skipped = append(result.Skipped, tableData.TableName)
-				i.progress.IncrementWithLabel(tableData.TableName)
+		tables := make(map[string][]map[string]any, len(dbBackup.Tables))
+		order := make([]string, 0, len(dbBackup.Tables))
+		for _, td := range dbBackup.Tables {
+			tables[td.TableName] = td.Rows
+			order = append(order, td.TableName)
+		}
+
+		consumed := make(map[string]bool)
+
+		// Cross-table converters see the whole database slice so a
+		// converter can join its primary table with sibling tables.
+		for _, name := range order {
+			conv, ok := Get(name)
+			if !ok || consumed[name] {
 				continue
 			}
-
-			n, err := conv.Import(ctx, tableData.Rows, db)
+			cross, ok := conv.(CrossTableConverter)
+			if !ok {
+				continue
+			}
+			imported, err := cross.ImportAll(ctx, tables, db)
 			if err != nil {
 				db.Close()
-				return result, fmt.Errorf("failed to import table %s: %w", tableData.TableName, err)
+				return result, fmt.Errorf("failed to import table %s: %w", name, err)
 			}
-			result.Imported[tableData.TableName] = n
-			i.progress.IncrementWithLabel(tableData.TableName)
+			for t, n := range imported {
+				result.Imported[t] = n
+				consumed[t] = true
+				i.progress.IncrementWithLabel(t)
+			}
+		}
+
+		for _, name := range order {
+			if consumed[name] {
+				continue
+			}
+			conv, ok := Get(name)
+			if !ok {
+				log.Printf("WARNING: no converter for table %s - data NOT imported", name)
+				result.Skipped = append(result.Skipped, name)
+				i.progress.IncrementWithLabel(name)
+				continue
+			}
+			n, err := conv.Import(ctx, tables[name], db)
+			if err != nil {
+				db.Close()
+				return result, fmt.Errorf("failed to import table %s: %w", name, err)
+			}
+			result.Imported[name] = n
+			i.progress.IncrementWithLabel(name)
 		}
 
 		db.Close()

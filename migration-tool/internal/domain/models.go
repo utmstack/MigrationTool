@@ -6,15 +6,16 @@ import (
 )
 
 type InstanceConfig struct {
-	Host          string `yaml:"host"`
-	Port          int    `yaml:"port"`
-	User          string `yaml:"user"`
-	Password      string `yaml:"password"`
-	SSLMode       string `yaml:"sslmode"`
-	SSHUser       string `yaml:"ssh_user"`
-	SSHPassword   string `yaml:"ssh_password"`
-	SSHPrivateKey string `yaml:"ssh_private_key"`
-	SSHPort       int    `yaml:"ssh_port"`
+	Host                  string `yaml:"host"`
+	Port                  int    `yaml:"port"`
+	User                  string `yaml:"user"`
+	Password              string `yaml:"password"`
+	SSLMode               string `yaml:"sslmode"`
+	SSHUser               string `yaml:"ssh_user"`
+	SSHPassword           string `yaml:"ssh_password"`
+	SSHPrivateKey         string `yaml:"ssh_private_key"`
+	SSHPort               int    `yaml:"ssh_port"`
+	IntegrationsConfigDir string `yaml:"integrations_config_dir"`
 }
 
 type DatabaseSource struct {

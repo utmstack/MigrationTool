@@ -45,6 +45,9 @@ func CompleteInstanceConfig(ic *domain.InstanceConfig, name string) error {
 	if ic.SSHPort == 0 {
 		ic.SSHPort = DefaultSSHPort
 	}
+	if ic.IntegrationsConfigDir == "" {
+		ic.IntegrationsConfigDir = DefaultIntegrationsConfigDir
+	}
 
 	if ic.Password != "" {
 		return nil

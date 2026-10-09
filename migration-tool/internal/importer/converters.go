@@ -11,6 +11,14 @@ type Converter interface {
 	Import(ctx context.Context, rows []map[string]any, destDB *sql.DB) (int, error)
 }
 
+// CrossTableConverter is a Converter that also needs sibling tables from the
+// backup. It is called once per SrcTable, but can read other tables' rows
+// (e.g. utm_integration needs utm_integration_conf + utm_server_module).
+type CrossTableConverter interface {
+	Converter
+	ImportAll(ctx context.Context, tables map[string][]map[string]any, destDB *sql.DB) (map[string]int, error)
+}
+
 var registry = map[string]Converter{}
 
 // Register panics on a duplicate SrcTable so a wiring mistake surfaces at process start.
