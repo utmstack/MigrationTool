@@ -16,10 +16,10 @@ type Service struct {
 	Environment []string `yaml:"environment"`
 }
 
-// PostgresServiceName is the name of the PostgreSQL service in the UTMStack
-// V12 compose file. Confirmed by the `docker service update ... utmstack_postgres`
-// port-management commands used throughout the tool.
-const PostgresServiceName = "utmstack_postgres"
+// PostgresYAMLServiceName is the service key in the compose.yml written by the
+// UTMStack installer ("postgres" in both V11 and V12). The Docker Swarm
+// service name is prefixed with the stack: utmstack_postgres.
+const PostgresYAMLServiceName = "postgres"
 
 func (u *Upgrader) GetPostgresPasswordFromCompose() (string, error) {
 	composePath := config.GetComposeYMLPath(u.sourceCfg.SSHUser)
@@ -33,7 +33,7 @@ func (u *Upgrader) GetPostgresPasswordFromCompose() (string, error) {
 		return "", fmt.Errorf("failed to parse compose.yml: %w", err)
 	}
 
-	postgresService, ok := compose.Services[PostgresServiceName]
+	postgresService, ok := compose.Services[PostgresYAMLServiceName]
 	if !ok {
 		return "", fmt.Errorf("postgres service not found in compose.yml")
 	}
