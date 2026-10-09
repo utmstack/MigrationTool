@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	InstallerURL         = "https://github.com/utmstack/UTMStack/releases/latest/download/installer-v12" // TODO: confirm V12 installer asset name with the release pipeline
+	InstallerURL         = "https://github.com/utmstack/UTMStack/releases/latest/download/installer"
 	SSHReconnectAttempts = 30
 	SSHReconnectDelay    = 10 * time.Second
 	PostInstallWaitTime  = 60 * time.Second
