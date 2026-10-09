@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/config"
-	_ "github.com/utmstack/UTMStackEnterprise/migration-tool/internal/converters"
+	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/converters"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/domain"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/exporter"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
@@ -239,6 +239,7 @@ func (u *Upgrader) importData() error {
 
 	destCfg := u.sourceCfg
 
+	converters.SetIntegrationsConfigDir(destCfg.IntegrationsConfigDir)
 	imp := importer.New(destCfg, u.totalTables)
 	result, err := imp.Import(u.backupFile)
 	if err != nil {

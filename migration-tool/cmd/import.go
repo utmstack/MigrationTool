@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/config"
-	_ "github.com/utmstack/UTMStackEnterprise/migration-tool/internal/converters"
+	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/converters"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/domain"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/postgres"
@@ -168,6 +168,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 
 	// Import data
 	ui.Step(4, 6, "Importing data to destination database")
+	converters.SetIntegrationsConfigDir(cfg.Destination.IntegrationsConfigDir)
 	imp := importer.New(cfg.Destination, totalTables)
 
 	result, err := imp.Import(importInputFile)
