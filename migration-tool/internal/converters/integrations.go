@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,6 +12,7 @@ import (
 	goyaml "gopkg.in/yaml.v3"
 
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
+	"github.com/utmstack/UTMStackEnterprise/migration-tool/pkg/ui"
 )
 
 var integrationsConfigDir = "/utmstack/events-engine-workdir/pipeline"
@@ -105,12 +105,12 @@ func (c integrationsConverter) ImportAll(ctx context.Context, tables map[string]
 		moduleID := fieldString(g, "module_id")
 		moduleName := modulesByID[moduleID]
 		if moduleName == "" {
-			log.Printf("converter: integrations: group %s (%q) has unknown module_id %s, skipping",
+			ui.Logf("converter: integrations: group %s (%q) has unknown module_id %s, skipping",
 				groupID, fieldString(g, "group_name"), moduleID)
 			continue
 		}
 		if _, ok := pluginNames[strings.ToUpper(moduleName)]; !ok {
-			log.Printf("converter: integrations: group %s (%q, module %s) is not a V12 plugin family, skipping",
+			ui.Logf("converter: integrations: group %s (%q, module %s) is not a V12 plugin family, skipping",
 				groupID, fieldString(g, "group_name"), moduleName)
 			continue
 		}
@@ -141,7 +141,7 @@ func (c integrationsConverter) ImportAll(ctx context.Context, tables map[string]
 	}
 
 	if migrated > 0 {
-		log.Printf("converter: integrations: wrote %d group config(s) to %s", migrated, integrationsConfigDir)
+		ui.Logf("converter: integrations: wrote %d group config(s) to %s", migrated, integrationsConfigDir)
 	}
 	imported["utm_module"] = len(modulesByID)
 	imported["utm_module_group"] = migrated

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 
@@ -160,7 +159,7 @@ func (i *Importer) Import(inputFile string) (Result, error) {
 			}
 			conv, ok := Get(name)
 			if !ok {
-				log.Printf("WARNING: no converter for table %s - data NOT imported", name)
+				ui.Logf("WARNING: no converter for table %s - data NOT imported", name)
 				result.Skipped = append(result.Skipped, name)
 				i.progress.IncrementWithLabel(name)
 				continue

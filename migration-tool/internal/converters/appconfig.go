@@ -4,12 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
+	"github.com/utmstack/UTMStackEnterprise/migration-tool/pkg/ui"
 )
 
 // configUUIDNamespace derives V12 app_config IDs from the V11 short key.
@@ -105,7 +105,7 @@ func (c configConverter) Import(ctx context.Context, rows []map[string]interface
 			continue
 		}
 		if seen[key] {
-			log.Printf("converter: utm_configuration_parameter: duplicate key %q (first row wins), skipping", key)
+			ui.Logf("converter: utm_configuration_parameter: duplicate key %q (first row wins), skipping", key)
 			continue
 		}
 		seen[key] = true
@@ -122,7 +122,7 @@ func (c configConverter) Import(ctx context.Context, rows []map[string]interface
 		count++
 	}
 	if skipped > 0 {
-		log.Printf("converter: utm_configuration_parameter: %d rows skipped (empty key)", skipped)
+		ui.Logf("converter: utm_configuration_parameter: %d rows skipped (empty key)", skipped)
 	}
 	return count, nil
 }

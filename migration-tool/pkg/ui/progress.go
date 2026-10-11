@@ -2,9 +2,12 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/term"
 )
 
 // Progress represents a progress bar for tracking operations
@@ -21,9 +24,53 @@ type Progress struct {
 	showETA     bool
 }
 
+// isStdoutTTY reports whether the bar can animate in place. When stdout is a
+// pipe or file the \r frames would concatenate into a garbled line, so we
+// suppress the live bar.
+func isStdoutTTY() bool {
+	return term.IsTerminal(int(os.Stdout.Fd()))
+}
+
+// activeBar tracks the live progress bar so Logf can clear it before printing
+// a log line and redraw it after, keeping the two from overlapping on a TTY.
+var (
+	activeBarMu sync.Mutex
+	activeBar   *Progress
+)
+
+func setActiveBar(p *Progress) {
+	activeBarMu.Lock()
+	activeBar = p
+	activeBarMu.Unlock()
+}
+
+// Logf prints an informational line that must not collide with a running
+// progress bar. On a TTY it clears the bar first and redraws it afterwards;
+// on a pipe the bar is not shown at all. All converter progress logs go
+// through here so they stay on one stream with the bar.
+func Logf(format string, args ...any) {
+	if isStdoutTTY() {
+		activeBarMu.Lock()
+		bar := activeBar
+		activeBarMu.Unlock()
+		if bar != nil {
+			bar.ClearLine()
+		}
+	}
+	fmt.Printf("  "+format+"\n", args...)
+	if isStdoutTTY() {
+		activeBarMu.Lock()
+		bar := activeBar
+		activeBarMu.Unlock()
+		if bar != nil {
+			bar.Redraw()
+		}
+	}
+}
+
 // NewProgress creates a new progress bar
 func NewProgress(total int, label string) *Progress {
-	return &Progress{
+	p := &Progress{
 		total:       total,
 		current:     0,
 		label:       label,
@@ -34,6 +81,8 @@ func NewProgress(total int, label string) *Progress {
 		showCount:   true,
 		showETA:     true,
 	}
+	setActiveBar(p)
+	return p
 }
 
 // SetWidth sets the progress bar width
@@ -75,9 +124,14 @@ func (p *Progress) SetLabel(label string) {
 	p.render()
 }
 
-// render draws the progress bar
+// render draws the progress bar. It is a no-op when stdout is not a TTY so
+// piped or logged runs stay clean instead of accumulating \r frames on one
+// line.
 func (p *Progress) render() {
 	if p.total == 0 {
+		return
+	}
+	if !isStdoutTTY() {
 		return
 	}
 
@@ -144,11 +198,27 @@ func (p *Progress) render() {
 	p.lastUpdate = time.Now()
 }
 
+// Redraw re-renders the current bar state, used after a log line has
+// cleared it.
+func (p *Progress) Redraw() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.render()
+}
+
+// ClearLine clears the bar's line without re-rendering it.
+func (p *Progress) ClearLine() {
+	fmt.Print("\r" + strings.Repeat(" ", 100) + "\r")
+}
+
 // Finish completes the progress bar with a final newline
 func (p *Progress) Finish() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if !isStdoutTTY() {
+		return
+	}
 	// Clear the line and move to next
 	fmt.Print("\r" + strings.Repeat(" ", 100) + "\r")
 }
