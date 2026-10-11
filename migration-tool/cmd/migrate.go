@@ -270,6 +270,10 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	// Import data to destination
 	ui.Step(6, 8, "Importing data to destination database")
 	converters.SetIntegrationsConfigDir(cfg.Destination.IntegrationsConfigDir)
+	if destSSH != nil {
+		// Plugin configs are YAML on the destination host; route writes over SSH.
+		converters.SetIntegrationsFileWriter(destSSH)
+	}
 	imp := importer.New(cfg.Destination, totalTables)
 
 	result, err := imp.Import(backupFile)

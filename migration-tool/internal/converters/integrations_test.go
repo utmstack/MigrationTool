@@ -152,6 +152,58 @@ func TestImportAllWritesYAMLPerPlugin(t *testing.T) {
 	}
 }
 
+// fakeRemoteWriter adapts the test fakes to integrationsFileWriter.
+type fakeRemoteWriter struct {
+	read  func(path string) ([]byte, error)
+	write func(path string, content []byte, perm os.FileMode) error
+}
+
+func (f fakeRemoteWriter) ReadFile(path string) ([]byte, error) { return f.read(path) }
+func (f fakeRemoteWriter) WriteFile(path string, content []byte, perm os.FileMode) error {
+	return f.write(path, content, perm)
+}
+
+func TestImportAllRemoteWriter(t *testing.T) {
+	// Server-to-server mode: YAML lands on the destination host, not local disk.
+	type fakeWriter struct {
+		written map[string][]byte
+	}
+	fw := &fakeWriter{written: map[string][]byte{}}
+	fwRead := func(path string) ([]byte, error) {
+		if b, ok := fw.written[path]; ok {
+			return b, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	fwWrite := func(path string, content []byte, perm os.FileMode) error {
+		fw.written[path] = content
+		return nil
+	}
+	old := integrationsWriter
+	integrationsWriter = fakeRemoteWriter{read: fwRead, write: fwWrite}
+	t.Cleanup(func() { integrationsWriter = old })
+
+	oldDir := integrationsConfigDir
+	integrationsConfigDir = "/remote/pipeline"
+	t.Cleanup(func() { integrationsConfigDir = oldDir })
+
+	if _, err := (integrationsConverter{}).ImportAll(context.Background(), fixtureTables(), nil); err != nil {
+		t.Fatalf("ImportAll: %v", err)
+	}
+
+	got, ok := fw.written["/remote/pipeline/system_plugins_o365.yaml"]
+	if !ok {
+		t.Fatalf("remote write missing, got: %v", fw.written)
+	}
+	var pf pluginsFile
+	if err := goyaml.Unmarshal(got, &pf); err != nil {
+		t.Fatalf("parse remote yaml: %v", err)
+	}
+	if len(pf.Plugins["o365"].Tenants[0].Groups) != 1 {
+		t.Errorf("remote o365 groups = %+v, want 1", pf.Plugins["o365"].Tenants[0].Groups)
+	}
+}
+
 func TestImportAllMergePreservesExistingFile(t *testing.T) {
 	dir := t.TempDir()
 

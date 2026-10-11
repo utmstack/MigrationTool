@@ -43,6 +43,19 @@ func pluginKey(moduleName string) string {
 	return strings.ToLower(moduleName)
 }
 
+type integrationsFileWriter interface {
+	ReadFile(path string) ([]byte, error)
+	WriteFile(path string, content []byte, perm os.FileMode) error
+}
+
+var integrationsWriter integrationsFileWriter
+
+// SetIntegrationsFileWriter routes plugin-YAML writes to a remote host
+// (server-to-server migration). Local mode keeps the default filesystem.
+func SetIntegrationsFileWriter(w integrationsFileWriter) {
+	integrationsWriter = w
+}
+
 type tenantConfig struct {
 	ID     string        `yaml:"id"`
 	Groups []configGroup `yaml:"groups"`
@@ -171,7 +184,7 @@ func buildGroupConfIndex(rows []map[string]any) map[string]map[string]string {
 
 func mergeGroupsIntoFile(path, key string, groups []configGroup) error {
 	pf := pluginsFile{Plugins: map[string]pluginEntry{}}
-	if data, err := os.ReadFile(path); err == nil {
+	if data, err := readFileBytes(path); err == nil {
 		if err := goyaml.Unmarshal(data, &pf); err != nil {
 			return err
 		}
@@ -200,11 +213,25 @@ func mergeGroupsIntoFile(path, key string, groups []configGroup) error {
 	existing.Groups = groups
 	pf.Plugins[key] = entry
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	data, err := goyaml.Marshal(pf)
 	if err != nil {
+		return err
+	}
+	return writeFileBytes(path, data)
+}
+
+func readFileBytes(path string) ([]byte, error) {
+	if integrationsWriter != nil {
+		return integrationsWriter.ReadFile(path)
+	}
+	return os.ReadFile(path)
+}
+
+func writeFileBytes(path string, data []byte) error {
+	if integrationsWriter != nil {
+		return integrationsWriter.WriteFile(path, data, 0o600)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
