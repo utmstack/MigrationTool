@@ -2,6 +2,7 @@ package upgrade
 
 import (
 	"errors"
+	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/domain"
 	"os"
 	"testing"
 )
@@ -73,5 +74,37 @@ services:
 	}
 	if _, err := u.GetPostgresPasswordFromCompose(); err == nil {
 		t.Fatal("expected error when postgres service missing")
+	}
+}
+
+func TestGetPostgresPasswordFromComposeFallsBackToSecondPath(t *testing.T) {
+	// The home compose is missing (first install vs updater self-copy); the
+	// root path must be tried before the password lookup fails.
+	compose := `
+services:
+  postgres:
+    environment:
+      - POSTGRES_PASSWORD=fb-secret
+`
+	readPaths := []string{}
+	u := &Upgrader{
+		sourceCfg: domain.InstanceConfig{SSHUser: "utmstack"},
+		executor: &staticExecutor{readFile: func(path string) ([]byte, error) {
+			readPaths = append(readPaths, path)
+			if path == "/home/utmstack/compose.yml" {
+				return nil, os.ErrNotExist
+			}
+			return []byte(compose), nil
+		}},
+	}
+	pass, err := u.GetPostgresPasswordFromCompose()
+	if err != nil {
+		t.Fatalf("fallback lookup failed: %v", err)
+	}
+	if pass != "fb-secret" {
+		t.Errorf("password = %q, want fb-secret", pass)
+	}
+	if len(readPaths) < 2 {
+		t.Errorf("expected at least 2 paths tried, got %v", readPaths)
 	}
 }

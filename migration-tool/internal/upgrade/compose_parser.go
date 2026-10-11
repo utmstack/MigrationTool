@@ -21,10 +21,31 @@ type Service struct {
 // service name is prefixed with the stack: utmstack_postgres.
 const PostgresYAMLServiceName = "postgres"
 
+// composeYMLPaths returns the candidate locations of the live compose.yml,
+// ordered by likelihood. The V11 installer and a V12 first install write it
+// next to the installer binary (in the operator's home dir); after an updater
+// self-copy the live one can sit next to /usr/local/bin/utmstack_installer.
+// The last entry covers the case where the installer ran as root in local mode.
+func (u *Upgrader) composeYMLPaths() []string {
+	homePath := config.GetHomeDir(u.sourceCfg.SSHUser) + "/compose.yml"
+	paths := []string{homePath, config.RootComposeYMLPath}
+	if homePath != "/root/compose.yml" {
+		paths = append(paths, "/root/compose.yml")
+	}
+	return paths
+}
+
 func (u *Upgrader) GetPostgresPasswordFromCompose() (string, error) {
-	composeContent, err := u.executor.ReadFile(config.RootComposeYMLPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read compose.yml at %s: %w", config.RootComposeYMLPath, err)
+	var composeContent []byte
+	var lastErr error
+	for _, path := range u.composeYMLPaths() {
+		composeContent, lastErr = u.executor.ReadFile(path)
+		if composeContent != nil {
+			break
+		}
+	}
+	if composeContent == nil {
+		return "", fmt.Errorf("failed to read compose.yml in %s: %w", strings.Join(u.composeYMLPaths(), ", "), lastErr)
 	}
 
 	var compose ComposeFile
