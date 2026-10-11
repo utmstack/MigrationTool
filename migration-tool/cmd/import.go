@@ -199,12 +199,12 @@ func runImport(cmd *cobra.Command, args []string) error {
 		var updatedContent []byte
 
 		if err != nil {
-			updatedContent = []byte(fmt.Sprintf("internal_key: %s\n", backup.InternalKey))
+			updatedContent = fmt.Appendf(nil, "internal_key: %s\n", backup.InternalKey)
 		} else {
 			updatedContent, err = yaml.UpdateInternalKeyInYAML(existingContent, backup.InternalKey)
 			if err != nil {
 				ui.Warning(fmt.Sprintf("Could not update YAML: %v", err))
-				updatedContent = []byte(fmt.Sprintf("internal_key: %s\n", backup.InternalKey))
+				updatedContent = fmt.Appendf(nil, "internal_key: %s\n", backup.InternalKey)
 			}
 		}
 

@@ -22,6 +22,7 @@ import (
 var (
 	migrateConfigFile string
 	migrateBackupFile string
+	migrateWithData   bool
 )
 
 var migrateCmd = &cobra.Command{
@@ -43,6 +44,8 @@ func init() {
 	migrateCmd.Flags().StringVar(&migrateBackupFile, "data-file", "", "Custom data file name (default: utmstack-migration-YYYYMMDD-HHMMSS.yml)")
 	migrateCmd.Flags().BoolVar(&upgradeSkipAgentCheck, "skip-agent-check", false,
 		"Skip the prepare-agents state DB check (use only if you know what you are doing)")
+	migrateCmd.Flags().BoolVar(&migrateWithData, "with-data", false,
+		"Also migrate search data: V11 OpenSearch tenant data -> V12 ClickHouse")
 
 	migrateCmd.MarkFlagRequired("config")
 }
@@ -306,12 +309,12 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		var updatedContent []byte
 
 		if err != nil {
-			updatedContent = []byte(fmt.Sprintf("internal_key: %s\n", backup.InternalKey))
+			updatedContent = fmt.Appendf(nil, "internal_key: %s\n", backup.InternalKey)
 		} else {
 			updatedContent, err = yaml.UpdateInternalKeyInYAML(existingContent, backup.InternalKey)
 			if err != nil {
 				ui.Warning(fmt.Sprintf("Could not update YAML: %v", err))
-				updatedContent = []byte(fmt.Sprintf("internal_key: %s\n", backup.InternalKey))
+				updatedContent = fmt.Appendf(nil, "internal_key: %s\n", backup.InternalKey)
 			}
 		}
 
@@ -326,6 +329,14 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		ui.Info("No internal key to sync")
 	} else {
 		ui.Info("No SSH configured for destination, skipping credential sync")
+	}
+
+	// Optional phase: stream V11 OpenSearch tenant data into the V12 ClickHouse.
+	if migrateWithData {
+		if err := runMigrateSearchData(cfg, sourceSSH, destSSH); err != nil {
+			ui.Error(fmt.Sprintf("Search data migration failed: %v", err))
+			return err
+		}
 	}
 
 	ui.FinalSuccess("Migration completed successfully")

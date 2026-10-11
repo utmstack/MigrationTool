@@ -26,8 +26,8 @@ const PostgresYAMLServiceName = "postgres"
 // next to the installer binary (in the operator's home dir); after an updater
 // self-copy the live one can sit next to /usr/local/bin/utmstack_installer.
 // The last entry covers the case where the installer ran as root in local mode.
-func (u *Upgrader) composeYMLPaths() []string {
-	homePath := config.GetHomeDir(u.sourceCfg.SSHUser) + "/compose.yml"
+func composeYMLPaths(sshUser string) []string {
+	homePath := config.GetComposeYMLPath(sshUser)
 	paths := []string{homePath, config.RootComposeYMLPath}
 	if homePath != "/root/compose.yml" {
 		paths = append(paths, "/root/compose.yml")
@@ -35,35 +35,56 @@ func (u *Upgrader) composeYMLPaths() []string {
 	return paths
 }
 
-func (u *Upgrader) GetPostgresPasswordFromCompose() (string, error) {
-	var composeContent []byte
-	var lastErr error
-	for _, path := range u.composeYMLPaths() {
-		composeContent, lastErr = u.executor.ReadFile(path)
-		if composeContent != nil {
-			break
-		}
-	}
-	if composeContent == nil {
-		return "", fmt.Errorf("failed to read compose.yml in %s: %w", strings.Join(u.composeYMLPaths(), ", "), lastErr)
-	}
+// CandidatePathForUser is the first candidate compose.yml location for a user.
+func CandidatePathForUser(sshUser string) string {
+	return config.GetComposeYMLPath(sshUser)
+}
 
+// ReadComposeBytes fetches the live compose.yml from a host via the executor,
+// trying each candidate path in turn.
+func ReadComposeBytes(exec ReadFileExecutor, sshUser string) ([]byte, error) {
+	var lastErr error
+	for _, p := range composeYMLPaths(sshUser) {
+		b, err := exec.ReadFile(p)
+		if err == nil && len(b) > 0 {
+			return b, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("could not read compose.yml (tried %v): %w", composeYMLPaths(sshUser), lastErr)
+}
+
+// FindComposeEnvVar returns the value of varName from the environment of
+// serviceKey in the given compose file. Environment entries are "KEY=VALUE"
+// strings. Reused by the migrate flow to pull OpenSearch / ClickHouse
+// credentials from the live host compose.
+func FindComposeEnvVar(content []byte, serviceKey, varName string) (string, error) {
 	var compose ComposeFile
-	if err := yaml.Unmarshal(composeContent, &compose); err != nil {
+	if err := yaml.Unmarshal(content, &compose); err != nil {
 		return "", fmt.Errorf("failed to parse compose.yml: %w", err)
 	}
-
-	postgresService, ok := compose.Services[PostgresYAMLServiceName]
+	svc, ok := compose.Services[serviceKey]
 	if !ok {
-		return "", fmt.Errorf("postgres service not found in compose.yml")
+		return "", fmt.Errorf("service %q not found in compose.yml", serviceKey)
 	}
-
-	for _, env := range postgresService.Environment {
-		if strings.HasPrefix(env, "POSTGRES_PASSWORD=") {
-			password := strings.TrimPrefix(env, "POSTGRES_PASSWORD=")
-			return password, nil
+	for _, env := range svc.Environment {
+		if key, val, found := strings.Cut(env, "="); found && key == varName {
+			return val, nil
 		}
 	}
+	return "", fmt.Errorf("%s not found in service %q", varName, serviceKey)
+}
 
-	return "", fmt.Errorf("POSTGRES_PASSWORD not found in compose.yml")
+// ReadFileExecutor is the subset of remote.CommandExecutor used to pull files
+// off a host, so the compose helpers work with both SSH and local executors.
+type ReadFileExecutor interface {
+	ReadFile(path string) ([]byte, error)
+}
+
+func (u *Upgrader) GetPostgresPasswordFromCompose() (string, error) {
+	composeContent, err := ReadComposeBytes(u.executor, u.sourceCfg.SSHUser)
+	if err != nil {
+		return "", err
+	}
+	return FindComposeEnvVar(composeContent, PostgresYAMLServiceName, "POSTGRES_PASSWORD")
 }

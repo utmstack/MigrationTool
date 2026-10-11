@@ -50,16 +50,14 @@ func NewOSClient(cfg OSConfig) *OSClient {
 
 // ListIndices returns every index name, sorted.
 func (c *OSClient) ListIndices(ctx context.Context) ([]string, error) {
-	var resp struct {
-		Indices []struct {
-			Index string `json:"index"`
-		} `json:"indices"`
+	var resp []struct {
+		Index string `json:"index"`
 	}
-	if err := c.do(ctx, http.MethodGet, "/_cat/indices", nil, &resp); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/_cat/indices?format=json", nil, &resp); err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(resp.Indices))
-	for _, in := range resp.Indices {
+	names := make([]string, 0, len(resp))
+	for _, in := range resp {
 		names = append(names, in.Index)
 	}
 	sort.Strings(names)
@@ -91,11 +89,11 @@ func (c *OSClient) Scroll(ctx context.Context, index string, pageSize int, onPag
 			body []byte
 		)
 		if scrollID == "" {
-			path = "/" + url.PathEscape(index) + "/_search"
-			body, _ = json.Marshal(map[string]interface{}{"size": pageSize, "scroll": "2m"})
+			path = "/" + url.PathEscape(index) + "/_search?scroll=2m"
+			body, _ = json.Marshal(map[string]interface{}{"size": pageSize})
 		} else {
-			path = "/_search/scroll"
-			body, _ = json.Marshal(map[string]interface{}{"scroll": "2m", "scroll_id": scrollID})
+			path = "/_search/scroll?scroll=2m"
+			body, _ = json.Marshal(map[string]interface{}{"scroll_id": scrollID})
 		}
 		if err := c.do(ctx, http.MethodPost, path, body, &r); err != nil {
 			return total, err
@@ -110,6 +108,28 @@ func (c *OSClient) Scroll(ctx context.Context, index string, pageSize int, onPag
 		if len(r.Hits.Hits) < pageSize {
 			break
 		}
+	}
+	return total, nil
+}
+
+// SampleFirst reads up to pageSize documents from the start of an index with
+// a single search request (no scroll session). It is used for size
+// estimation: one round-trip per index, no cleanup.
+func (c *OSClient) SampleFirst(ctx context.Context, index string, pageSize int, onPage func(id string, doc map[string]interface{}) error) (int, error) {
+	if pageSize <= 0 {
+		pageSize = 1000
+	}
+	body, _ := json.Marshal(map[string]interface{}{"size": pageSize})
+	var r osSearchResponse
+	if err := c.do(ctx, http.MethodPost, "/"+url.PathEscape(index)+"/_search", body, &r); err != nil {
+		return 0, err
+	}
+	total := 0
+	for _, h := range r.Hits.Hits {
+		if err := onPage(h.ID, h.Source); err != nil {
+			return total, err
+		}
+		total++
 	}
 	return total, nil
 }

@@ -1,6 +1,7 @@
 package os2ch
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -45,6 +46,9 @@ func NewCHWriter(ctx context.Context, cfg CHConfig, logger *slog.Logger) (*CHWri
 	if cfg.User == "" {
 		cfg.User = "default"
 	}
+	// Bulk inserts of large NDJSON files can take minutes on small VMs while
+	// ClickHouse merges, so the read timeout must comfortably exceed the
+	// default 53s.
 	conn, err := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{cfg.Addr},
 		Auth: clickhouse.Auth{
@@ -52,6 +56,7 @@ func NewCHWriter(ctx context.Context, cfg CHConfig, logger *slog.Logger) (*CHWri
 			Username: cfg.User,
 			Password: cfg.Password,
 		},
+		ReadTimeout: 30 * time.Minute,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open clickhouse native: %w", err)
@@ -95,30 +100,56 @@ func TableFor(ds Dataset) string {
 	}
 }
 
-// Insert appends a batch of already-mapped documents to the dataset's table
-// as one JSONEachRow AsyncInsert over the native protocol.
-func (w *CHWriter) Insert(ctx context.Context, ds Dataset, docs []map[string]interface{}) error {
+// insertChunkBytes caps how many raw bytes are buffered into one AsyncInsert
+// so a single large NDJSON file never holds an unbounded in-memory string.
+const insertChunkBytes = 64 * 1024 * 1024
+
+// InsertFile loads one NDJSON reader into the dataset's table. It reads the
+// rows in large chunks and issues one AsyncInsert per chunk (wait=true), so
+// hundreds of thousands of documents become a handful of bulk inserts instead
+// of one awaited insert per small batch, which is what made the streaming path
+// crawl. A native-protocol Exec does not accept an io.Reader, so the rows are
+// embedded in the query text, matching the proven V12 os2ch reference.
+func (w *CHWriter) InsertFile(ctx context.Context, ds Dataset, r io.Reader) error {
 	table := TableFor(ds)
 	if table == "" {
 		return fmt.Errorf("unknown dataset %q", ds)
 	}
-	if len(docs) == 0 {
-		return nil
-	}
-	var rows bytes.Buffer
-	for _, doc := range docs {
-		line, err := MarshalRow(doc)
-		if err != nil {
-			return fmt.Errorf("marshal row: %w", err)
+
+	var (
+		scanner = bufio.NewScanner(r)
+		chunk   bytes.Buffer
+	)
+	scanner.Buffer(make([]byte, 1024*1024), 64*1024*1024)
+	for scanner.Scan() {
+		if chunk.Len() > 0 {
+			chunk.WriteByte('\n')
 		}
-		rows.WriteString(line)
-		rows.WriteByte('\n')
+		chunk.Write(scanner.Bytes())
+		if chunk.Len() >= insertChunkBytes {
+			if err := w.insertChunk(ctx, table, &chunk); err != nil {
+				return err
+			}
+		}
 	}
-	batch := fmt.Sprintf("INSERT INTO %s FORMAT JSONEachRow\n%s", table, rows.String())
-	if err := w.native.AsyncInsert(ctx, batch, true); err != nil {
-		return fmt.Errorf("async insert into %s: %w", table, err)
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read ndjson for %s: %w", table, err)
 	}
-	w.log.Debug("inserted batch", "table", table, "rows", len(docs))
+	if chunk.Len() > 0 {
+		if err := w.insertChunk(ctx, table, &chunk); err != nil {
+			return err
+		}
+	}
+	w.log.Debug("bulk insert", "table", table)
+	return nil
+}
+
+func (w *CHWriter) insertChunk(ctx context.Context, table string, chunk *bytes.Buffer) error {
+	query := fmt.Sprintf("INSERT INTO %s FORMAT JSONEachRow\n%s", table, chunk.String())
+	if err := w.native.AsyncInsert(ctx, query, true); err != nil {
+		return fmt.Errorf("bulk insert into %s: %w", table, err)
+	}
+	chunk.Reset()
 	return nil
 }
 
