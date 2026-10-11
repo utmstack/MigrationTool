@@ -19,6 +19,15 @@ type CrossTableConverter interface {
 	ImportAll(ctx context.Context, tables map[string][]map[string]any, destDB *sql.DB) (map[string]int, error)
 }
 
+// CrossDatabaseConverter is a Converter whose source table and destination
+// table live in different databases (e.g. utmstack.utm_federation_service_client
+// → agentmanager.connection_keys). It is called once, after every database in
+// the backup has been connected, so it can write to the right one.
+type CrossDatabaseConverter interface {
+	Converter
+	ImportAll(ctx context.Context, tables map[string][]map[string]any, dbs map[string]*sql.DB) (map[string]int, error)
+}
+
 var registry = map[string]Converter{}
 
 // Register panics on a duplicate SrcTable so a wiring mistake surfaces at process start.

@@ -74,11 +74,56 @@ func (i *Importer) Import(inputFile string) (Result, error) {
 	// Initialize progress bar
 	i.progress = ui.NewProgress(i.totalTables, "Importing tables")
 
+	consumed := make(map[string]bool)
+
+	// Open every destination database up front: cross-database converters
+	// need more than one connection at a time.
+	dbConns := make(map[string]*sql.DB, len(backup.Databases))
+	defer func() {
+		for _, db := range dbConns {
+			db.Close()
+		}
+	}()
 	for _, dbBackup := range backup.Databases {
 		db, err := postgres.Connect(i.instanceCfg, dbBackup.Database)
 		if err != nil {
 			return result, fmt.Errorf("failed to connect to database %s: %w", dbBackup.Database, err)
 		}
+		dbConns[dbBackup.Database] = db
+	}
+
+	// Cross-database converters run first, with access to all connections.
+	for _, dbBackup := range backup.Databases {
+		tables := make(map[string][]map[string]any, len(dbBackup.Tables))
+		for _, td := range dbBackup.Tables {
+			tables[td.TableName] = td.Rows
+		}
+		for _, td := range dbBackup.Tables {
+			if consumed[td.TableName] {
+				continue
+			}
+			conv, ok := Get(td.TableName)
+			if !ok {
+				continue
+			}
+			cross, ok := conv.(CrossDatabaseConverter)
+			if !ok {
+				continue
+			}
+			imported, err := cross.ImportAll(ctx, tables, dbConns)
+			if err != nil {
+				return result, fmt.Errorf("failed to import table %s: %w", td.TableName, err)
+			}
+			for t, n := range imported {
+				result.Imported[t] = n
+				consumed[t] = true
+				i.progress.IncrementWithLabel(t)
+			}
+		}
+	}
+
+	for _, dbBackup := range backup.Databases {
+		db := dbConns[dbBackup.Database]
 
 		tables := make(map[string][]map[string]any, len(dbBackup.Tables))
 		order := make([]string, 0, len(dbBackup.Tables))
@@ -86,8 +131,6 @@ func (i *Importer) Import(inputFile string) (Result, error) {
 			tables[td.TableName] = td.Rows
 			order = append(order, td.TableName)
 		}
-
-		consumed := make(map[string]bool)
 
 		// Cross-table converters see the whole database slice so a
 		// converter can join its primary table with sibling tables.
@@ -102,7 +145,6 @@ func (i *Importer) Import(inputFile string) (Result, error) {
 			}
 			imported, err := cross.ImportAll(ctx, tables, db)
 			if err != nil {
-				db.Close()
 				return result, fmt.Errorf("failed to import table %s: %w", name, err)
 			}
 			for t, n := range imported {
@@ -125,14 +167,11 @@ func (i *Importer) Import(inputFile string) (Result, error) {
 			}
 			n, err := conv.Import(ctx, tables[name], db)
 			if err != nil {
-				db.Close()
 				return result, fmt.Errorf("failed to import table %s: %w", name, err)
 			}
 			result.Imported[name] = n
 			i.progress.IncrementWithLabel(name)
 		}
-
-		db.Close()
 	}
 
 	i.progress.FinishWithMessage("Import completed")

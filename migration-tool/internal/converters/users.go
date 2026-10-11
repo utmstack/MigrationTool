@@ -88,7 +88,7 @@ func mapUserRow(src map[string]interface{}) userRow {
 	}
 }
 
-const insertUserSQL = `INSERT INTO user (id, tenant_id, email, name, password_hash, status, lang_key, image_url)
+const insertUserSQL = `INSERT INTO "user" (id, tenant_id, email, name, password_hash, status, lang_key, image_url)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (id) DO UPDATE SET
 	email = EXCLUDED.email,
