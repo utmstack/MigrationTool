@@ -15,6 +15,14 @@ func (u *Upgrader) cleanupInstance() error {
 		command     string
 	}{
 		{
+			description: "Removing V11 updater service",
+			command:     "bash -c 'systemctl disable --now UTMStackComponentsUpdater 2>/dev/null || true; systemctl reset-failed UTMStackComponentsUpdater 2>/dev/null || true; rm -f /etc/systemd/system/UTMStackComponentsUpdater.service && systemctl daemon-reload'",
+		},
+		{
+			description: "Removing V11 installer binary",
+			command:     "bash -c 'rm -f /usr/local/bin/utmstack_installer /usr/local/bin/utmstack-installer 2>/dev/null || true'",
+		},
+		{
 			description: "Removing Swarm services",
 			command:     "bash -c 'docker service ls -q | xargs -r docker service rm 2>/dev/null || true'",
 		},
@@ -44,7 +52,7 @@ func (u *Upgrader) cleanupInstance() error {
 		},
 		{
 			description: "Removing compose files",
-			command:     "rm -f /root/compose.yml /compose.yml",
+			command:     "rm -f /root/compose.yml /compose.yml /home/*/compose.yml",
 		},
 		{
 			description: "Removing old installer",
