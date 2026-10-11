@@ -41,6 +41,8 @@ but recommended for security credential synchronization.`,
 func init() {
 	migrateCmd.Flags().StringVarP(&migrateConfigFile, "config", "c", "", "Configuration file (required)")
 	migrateCmd.Flags().StringVar(&migrateBackupFile, "data-file", "", "Custom data file name (default: utmstack-migration-YYYYMMDD-HHMMSS.yml)")
+	migrateCmd.Flags().BoolVar(&upgradeSkipAgentCheck, "skip-agent-check", false,
+		"Skip the prepare-agents state DB check (use only if you know what you are doing)")
 
 	migrateCmd.MarkFlagRequired("config")
 }

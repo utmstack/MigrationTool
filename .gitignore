@@ -17,3 +17,6 @@ utmstack-migration-*.yml
 # OS
 .DS_Store
 odd/
+
+# pilot validation workspace (binaries + data files with secrets)
+pilot/

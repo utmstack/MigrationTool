@@ -63,7 +63,7 @@ func (i *Importer) Import(inputFile string) (Result, error) {
 		return result, fmt.Errorf("backup file contains no data")
 	}
 
-	if backup.InternalKey != "" {
+	if backup.InternalKey != "" && i.instanceCfg.SSHUser == "" {
 		if err := yaml.WriteInternalKey(config.UTMStackYMLPath, backup.InternalKey); err != nil {
 			return result, fmt.Errorf("failed to write internal key: %w", err)
 		}
