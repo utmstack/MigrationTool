@@ -16,7 +16,7 @@ const (
 
 const (
 	UTMStackYMLPath    = "/root/utmstack.yml"
-	RootComposeYMLPath = "/root/compose.yml"
+	RootComposeYMLPath = "/usr/local/bin/compose.yml"
 	// DefaultIntegrationsConfigDir is where V12 loads integration config
 	// YAMLs from on the host (mounted into the backend as /workdir/pipeline).
 	DefaultIntegrationsConfigDir = "/utmstack/events-engine-workdir/pipeline"

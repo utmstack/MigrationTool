@@ -22,10 +22,9 @@ type Service struct {
 const PostgresYAMLServiceName = "postgres"
 
 func (u *Upgrader) GetPostgresPasswordFromCompose() (string, error) {
-	composePath := config.GetComposeYMLPath(u.sourceCfg.SSHUser)
-	composeContent, err := u.executor.ReadFile(composePath)
+	composeContent, err := u.executor.ReadFile(config.RootComposeYMLPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read compose.yml at %s: %w", composePath, err)
+		return "", fmt.Errorf("failed to read compose.yml at %s: %w", config.RootComposeYMLPath, err)
 	}
 
 	var compose ComposeFile
