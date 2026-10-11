@@ -1,0 +1,165 @@
+package os2ch
+
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"sort"
+	"strings"
+	"time"
+)
+
+// OSClient talks to an OpenSearch REST endpoint. It lists indices and scrolls
+// one index at a time, feeding each document to a callback. It trusts
+// self-signed certificates (in-cluster TLS) and uses basic auth.
+type OSClient struct {
+	base   string
+	user   string
+	pass   string
+	client *http.Client
+}
+
+type OSConfig struct {
+	Host     string // host:port
+	User     string
+	Password string
+}
+
+func NewOSClient(cfg OSConfig) *OSClient {
+	base := cfg.Host
+	if !strings.HasPrefix(base, "http") {
+		base = "https://" + base
+	}
+	return &OSClient{
+		base: strings.TrimSuffix(base, "/"),
+		user: cfg.User,
+		pass: cfg.Password,
+		client: &http.Client{
+			Timeout: 10 * time.Minute,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		},
+	}
+}
+
+// ListIndices returns every index name, sorted.
+func (c *OSClient) ListIndices(ctx context.Context) ([]string, error) {
+	var resp struct {
+		Indices []struct {
+			Index string `json:"index"`
+		} `json:"indices"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/_cat/indices", nil, &resp); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(resp.Indices))
+	for _, in := range resp.Indices {
+		names = append(names, in.Index)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+type osSearchResponse struct {
+	ScrollID string `json:"_scroll_id"`
+	Hits     struct {
+		Hits []struct {
+			ID     string                 `json:"_id"`
+			Source map[string]interface{} `json:"_source"`
+		} `json:"hits"`
+	} `json:"hits"`
+}
+
+// Scroll reads one index via the scroll API, calling onPage per document.
+// It returns the number of documents read.
+func (c *OSClient) Scroll(ctx context.Context, index string, pageSize int, onPage func(id string, doc map[string]interface{}) error) (int, error) {
+	if pageSize <= 0 {
+		pageSize = 2000
+	}
+	var scrollID string
+	total := 0
+	for {
+		var r osSearchResponse
+		var (
+			path string
+			body []byte
+		)
+		if scrollID == "" {
+			path = "/" + url.PathEscape(index) + "/_search"
+			body, _ = json.Marshal(map[string]interface{}{"size": pageSize, "scroll": "2m"})
+		} else {
+			path = "/_search/scroll"
+			body, _ = json.Marshal(map[string]interface{}{"scroll": "2m", "scroll_id": scrollID})
+		}
+		if err := c.do(ctx, http.MethodPost, path, body, &r); err != nil {
+			return total, err
+		}
+		scrollID = r.ScrollID
+		for _, h := range r.Hits.Hits {
+			if err := onPage(h.ID, h.Source); err != nil {
+				return total, err
+			}
+			total++
+		}
+		if len(r.Hits.Hits) < pageSize {
+			break
+		}
+	}
+	return total, nil
+}
+
+// CountDocs returns the document count for a single index.
+func (c *OSClient) CountDocs(ctx context.Context, index string) (int64, error) {
+	var resp struct {
+		Count int64 `json:"count"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/"+url.PathEscape(index)+"/_count", nil, &resp); err != nil {
+		return 0, err
+	}
+	return resp.Count, nil
+}
+
+func (c *OSClient) do(ctx context.Context, method, path string, body []byte, out interface{}) error {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, reader)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.user != "" {
+		req.SetBasicAuth(c.user, c.pass)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("OS %s %s: %s: %s", method, path, resp.Status, truncate(data, 300))
+	}
+	if out != nil {
+		return json.Unmarshal(data, out)
+	}
+	return nil
+}
+
+func truncate(b []byte, n int) string {
+	s := strings.TrimSpace(string(b))
+	if len(s) > n {
+		return s[:n] + "..."
+	}
+	return s
+}
