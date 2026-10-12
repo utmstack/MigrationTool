@@ -2,9 +2,10 @@ package upgrade
 
 import (
 	"errors"
-	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/domain"
 	"os"
 	"testing"
+
+	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/domain"
 )
 
 type staticExecutor struct {
@@ -31,62 +32,6 @@ func (s *staticExecutor) WriteFile(path string, data []byte, perm os.FileMode) e
 	return nil
 }
 func (s *staticExecutor) Close() error { return nil }
-
-func TestFindComposeEnvVarAcrossServices(t *testing.T) {
-	// The same parser must work for any service/credential pair, not just
-	// Postgres, because the migrate flow reads OpenSearch and ClickHouse
-	// credentials from the live compose too.
-	compose := `
-services:
-  node1:
-    environment:
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=x
-      - ELASTICSEARCH_PASSWORD=LSP#NdRs
-  clickhouse:
-    environment:
-      - CLICKHOUSE_PASSWORD=3tJYT
-  postgres:
-    environment:
-      - POSTGRES_PASSWORD=3tJYT
-`
-	if v, err := FindComposeEnvVar([]byte(compose), "node1", "ELASTICSEARCH_PASSWORD"); err != nil || v != "LSP#NdRs" {
-		t.Errorf("node1/ELASTICSEARCH_PASSWORD = %q, %v", v, err)
-	}
-	if v, err := FindComposeEnvVar([]byte(compose), "clickhouse", "CLICKHOUSE_PASSWORD"); err != nil || v != "3tJYT" {
-		t.Errorf("clickhouse/CLICKHOUSE_PASSWORD = %q, %v", v, err)
-	}
-	if _, err := FindComposeEnvVar([]byte(compose), "node1", "NOPE"); err == nil {
-		t.Error("expected error for missing var")
-	}
-	if _, err := FindComposeEnvVar([]byte(compose), "missing", "X"); err == nil {
-		t.Error("expected error for missing service")
-	}
-}
-
-func TestReadComposeBytesFallsBackAcrossPaths(t *testing.T) {
-	readPaths := []string{}
-	ex := &staticExecutor{readFile: func(path string) ([]byte, error) {
-		readPaths = append(readPaths, path)
-		if path == CandidatePathForUser("utmstack") {
-			return nil, os.ErrNotExist
-		}
-		return []byte(`services:
-  postgres:
-    environment:
-      - POSTGRES_PASSWORD=fallback
-`), nil
-	}}
-	b, err := ReadComposeBytes(ex, "utmstack")
-	if err != nil {
-		t.Fatalf("ReadComposeBytes: %v", err)
-	}
-	if v, err := FindComposeEnvVar(b, "postgres", "POSTGRES_PASSWORD"); err != nil || v != "fallback" {
-		t.Errorf("fallback value = %q, %v", v, err)
-	}
-	if len(readPaths) < 2 {
-		t.Errorf("expected multiple paths tried, got %v", readPaths)
-	}
-}
 
 func TestGetPostgresPasswordFromComposeUsesYAMLKeyNotSwarmName(t *testing.T) {
 	// The installer writes the key "postgres"; the swarm service is

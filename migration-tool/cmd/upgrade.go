@@ -20,6 +20,7 @@ var (
 	upgradeConfigFile     string
 	upgradeBackupFile     string
 	upgradeSkipAgentCheck bool
+	upgradeWithData       bool
 )
 
 var errUserCancelled = errors.New("cancelled by user")
@@ -48,6 +49,8 @@ func init() {
 	upgradeCmd.Flags().StringVar(&upgradeBackupFile, "data-file", "", "Custom data file name (default: utmstack-upgrade-YYYYMMDD-HHMMSS.yml)")
 	upgradeCmd.Flags().BoolVar(&upgradeSkipAgentCheck, "skip-agent-check", false,
 		"Skip the prepare-agents state DB check (use only if you know what you are doing)")
+	upgradeCmd.Flags().BoolVar(&upgradeWithData, "with-data", false,
+		"Also migrate V11 OpenSearch tenant data into V12 ClickHouse (dumped before cleanup, loaded after import)")
 }
 
 // ensureAgentsPrepared verifies that the operator has run `prepare-agents` before
@@ -253,7 +256,7 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 		})
 
 	ui.Step(2, 2, "Starting upgrade process")
-	upgrader := upgrade.New(cfg.Source, cfg.Databases, backupFile)
+	upgrader := upgrade.New(cfg.Source, cfg.Databases, backupFile, upgradeWithData)
 
 	if err := upgrader.RunUpgrade(); err != nil {
 		ui.FinalError("Upgrade failed")

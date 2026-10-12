@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -15,14 +16,16 @@ import (
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/postgres"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/postinstall"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/remote"
+	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/searchdata"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/yaml"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/pkg/ui"
 )
 
 var (
-	migrateConfigFile string
-	migrateBackupFile string
-	migrateWithData   bool
+	migrateConfigFile   string
+	migrateBackupFile   string
+	migrateWithData     bool
+	migrateSearchPhases *searchdata.Phases
 )
 
 var migrateCmd = &cobra.Command{
@@ -181,6 +184,22 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Dump the V11 OpenSearch tenant data now, while the source is intact,
+	// so the destructive part of the migration never runs against an index
+	// that cannot be re-read. The dump is loaded at the end of the run.
+	if migrateWithData {
+		phases, err := newSearchPhases(cfg, sourceSSH)
+		if err != nil {
+			ui.Error(err.Error())
+			return err
+		}
+		if err := phases.RunDump(context.Background()); err != nil {
+			ui.Error(fmt.Sprintf("Search data dump failed: %v", err))
+			return err
+		}
+		migrateSearchPhases = phases
+	}
+
 	// Extract internal key from source
 	ui.Step(4, 8, "Extracting security credentials from source")
 	if sourceSSH != nil {
@@ -268,6 +287,9 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 				ui.Warning("Timeout opening destination database port (30s)")
 			}
 		}
+		if migrateSearchPhases != nil {
+			migrateSearchPhases.SetDestExec(destSSH)
+		}
 	} else {
 		ui.Info("No SSH configured for destination, skipping port management")
 	}
@@ -331,9 +353,9 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		ui.Info("No SSH configured for destination, skipping credential sync")
 	}
 
-	// Optional phase: stream V11 OpenSearch tenant data into the V12 ClickHouse.
-	if migrateWithData {
-		if err := runMigrateSearchData(cfg, sourceSSH, destSSH); err != nil {
+	// Load the dumped OpenSearch data into the V12 ClickHouse and verify it.
+	if migrateSearchPhases != nil {
+		if err := migrateSearchPhases.RunLoad(context.Background()); err != nil {
 			ui.Error(fmt.Sprintf("Search data migration failed: %v", err))
 			return err
 		}
