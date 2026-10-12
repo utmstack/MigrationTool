@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -92,6 +93,34 @@ records:
 	}
 	if len(m.Records) != 1 || !m.Records[0].Loaded {
 		t.Fatalf("manifest parsed wrong: %+v", m.Records)
+	}
+}
+
+func TestDumpIndexProgressCallback(t *testing.T) {
+	srv := fakeOS(t)
+	defer srv.Close()
+
+	e := &Engine{
+		os:    NewOSClient(OSConfig{Host: srv.URL}),
+		log:   slog.New(slog.DiscardHandler),
+		batch: 2,
+	}
+	type report struct {
+		index string
+		docs  int
+	}
+	var mu sync.Mutex
+	got := []report{}
+	e.SetIndexProgress(func(index string, ds Dataset, docs int) {
+		mu.Lock()
+		got = append(got, report{index, docs})
+		mu.Unlock()
+	})
+	if _, err := e.Dump(context.Background(), t.TempDir()); err != nil {
+		t.Fatalf("Dump: %v", err)
+	}
+	if len(got) != 1 || got[0].index != "v11-log-linux-2026-10-11" || got[0].docs != 3 {
+		t.Fatalf("progress reports = %+v, want one for v11-log-linux-2026-10-11 with 3 docs", got)
 	}
 }
 

@@ -61,7 +61,6 @@ func (p *Phases) RunDump(ctx context.Context) error {
 	if p.dumped {
 		return nil
 	}
-	ui.StartOperation("Dumping OpenSearch tenant data to " + p.dumpDir)
 	osPass, err := p.composeEnv(p.cfg.SourceExec, p.cfg.SourceSSHUser, "node1", osPasswordVars, "OpenSearch admin password in source compose")
 	if err != nil {
 		return err
@@ -80,6 +79,12 @@ func (p *Phases) RunDump(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("os2ch engine: %w", err)
 	}
+	grouped, _, _ := engine.OSIndices(ctx)
+	nIndices := len(grouped[os2ch.DatasetLogs]) + len(grouped[os2ch.DatasetAlerts]) + len(grouped[os2ch.DatasetStatistics])
+	ui.StartOperation(fmt.Sprintf("Dumping %d OpenSearch index(es) to %s", nIndices, p.dumpDir))
+	engine.SetIndexProgress(func(index string, ds os2ch.Dataset, docs int) {
+		ui.Info(fmt.Sprintf("dumped %s: %d docs", index, docs))
+	})
 	dres, err := engine.Dump(ctx, p.dumpDir)
 	if err != nil {
 		ui.Warning("Dump preserved at " + p.dumpDir + " for re-run (already-dumped indices will be reused)")
@@ -97,7 +102,6 @@ func (p *Phases) RunLoad(ctx context.Context) error {
 	if p.cfg.DestExec == nil {
 		return fmt.Errorf("no destination executor: --with-data requires SSH access to the destination")
 	}
-	ui.StartOperation("Loading NDJSON into ClickHouse")
 	chPass, err := p.composeEnv(p.cfg.DestExec, p.cfg.DestSSHUser, "clickhouse", []string{"CLICKHOUSE_PASSWORD"}, "ClickHouse password in destination compose")
 	if err != nil {
 		return err
@@ -117,6 +121,10 @@ func (p *Phases) RunLoad(ctx context.Context) error {
 		return fmt.Errorf("os2ch engine: %w", err)
 	}
 	defer engine.Close()
+	ui.StartOperation("Loading NDJSON into ClickHouse")
+	engine.SetIndexProgress(func(index string, ds os2ch.Dataset, docs int) {
+		ui.Info(fmt.Sprintf("loaded %s: %d docs", index, docs))
+	})
 
 	lres, err := engine.Load(ctx, p.dumpDir)
 	if err != nil {
@@ -136,12 +144,6 @@ func (p *Phases) RunLoad(ctx context.Context) error {
 		}
 	}
 
-	if s := lres.PerIndexSummary(); s != "" {
-		ui.Info("Loaded per index:")
-		for _, line := range strings.Split(s, "\n") {
-			ui.Info("  " + line)
-		}
-	}
 	if s := engine.OrphansSummary(); s != "" {
 		ui.Info("Orphan field report (V11 fields with no V12 column):")
 		for _, line := range strings.Split(s, "\n") {

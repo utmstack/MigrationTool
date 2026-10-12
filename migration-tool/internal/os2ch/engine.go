@@ -21,9 +21,13 @@ import (
 const (
 	defaultBatch    = 5000
 	manifestName    = "manifest.yaml"
-	dumpWorkers     = 4
+	dumpWorkers     = 8
 	estimatePerPage = 1000
 )
+
+// IndexProgress reports that one index finished dumping or loading, so the
+// caller can keep the user informed during long transfers.
+type IndexProgress func(index string, ds Dataset, docs int)
 
 // StreamIndex reports per-index progress and totals for one dataset.
 type StreamIndex struct {
@@ -44,6 +48,13 @@ type Engine struct {
 	batch   int
 	log     *slog.Logger
 	orphans *OrphanReport
+	onIndex IndexProgress
+}
+
+// SetIndexProgress attaches a callback invoked once per finished index, in
+// both Dump and Load, so long transfers stay visible to the operator.
+func (e *Engine) SetIndexProgress(fn IndexProgress) {
+	e.onIndex = fn
 }
 
 // EngineConfig holds connection settings for both ends.
@@ -317,6 +328,9 @@ func (e *Engine) Dump(ctx context.Context, dir string) (*DumpResult, error) {
 				File:    filepath.Base(o.file),
 				Docs:    o.count,
 			})
+			if e.onIndex != nil {
+				e.onIndex(o.idx, o.ds, o.count)
+			}
 		}
 	}
 
@@ -515,6 +529,9 @@ func (e *Engine) Load(ctx context.Context, dir string) (*LoadResult, error) {
 		rec.Loaded = true
 		if err := writeManifest(manifestPath, manifest); err != nil {
 			return nil, fmt.Errorf("update manifest: %w", err)
+		}
+		if e.onIndex != nil {
+			e.onIndex(rec.Index, rec.Dataset, si.Mapped)
 		}
 	}
 	return res, nil
