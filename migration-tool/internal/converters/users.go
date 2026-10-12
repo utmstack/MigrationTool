@@ -9,7 +9,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
-	"github.com/utmstack/UTMStackEnterprise/migration-tool/pkg/ui"
 )
 
 // userUUIDNamespace derives V12 user IDs from the V11 numeric surrogate id.
@@ -148,7 +147,6 @@ func (c userAuthorityConverter) Import(ctx context.Context, rows []map[string]in
 		}
 		userID := userUUIDForV11ID(v11UserID)
 		roleID := mapRoleName(authority)
-		ui.Logf("converter: user v11_id=%s: %s → %s", v11UserID, authority, roleID)
 		if _, err := destDB.ExecContext(ctx, insertUserRoleSQL, userID, roleID, DefaultTenantID); err != nil {
 			return 0, fmt.Errorf("jhi_user_authority → user_role (user_id=%s): %w", v11UserID, err)
 		}
@@ -173,7 +171,6 @@ func (c authorityConverter) Import(_ context.Context, rows []map[string]interfac
 		sorted = append(sorted, name)
 	}
 	sort.Strings(sorted)
-	ui.Logf("converter: V11 roles are already seeded in V12; distinct source authorities: %v", sorted)
 	return 0, nil
 }
 

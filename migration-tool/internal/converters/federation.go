@@ -7,7 +7,6 @@ import (
 
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/domain"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
-	"github.com/utmstack/UTMStackEnterprise/migration-tool/pkg/ui"
 )
 
 const insertConnectionKeySQL = `INSERT INTO connection_keys (tenant_id, key)
@@ -38,7 +37,6 @@ func (c federationConverter) ImportAll(ctx context.Context, tables map[string][]
 		if key == "" {
 			continue
 		}
-		ui.Logf("converter: utm_federation_service_client: writing connection_key for tenant %s", DefaultTenantID)
 		if _, err := am.ExecContext(ctx, insertConnectionKeySQL, DefaultTenantID, key); err != nil {
 			return nil, fmt.Errorf("utm_federation_service_client → connection_keys: %w", err)
 		}

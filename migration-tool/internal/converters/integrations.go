@@ -140,9 +140,6 @@ func (c integrationsConverter) ImportAll(ctx context.Context, tables map[string]
 		}
 	}
 
-	if migrated > 0 {
-		ui.Logf("converter: integrations: wrote %d group config(s) to %s", migrated, integrationsConfigDir)
-	}
 	imported["utm_module"] = len(modulesByID)
 	imported["utm_module_group"] = migrated
 	imported["utm_module_group_configuration"] = len(tables["utm_module_group_configuration"])

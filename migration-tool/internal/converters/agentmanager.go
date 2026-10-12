@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
-	"github.com/utmstack/UTMStackEnterprise/migration-tool/pkg/ui"
 )
 
 const insertAgentSQL = `INSERT INTO agents (id, ip, hostname, os, platform, version, agent_key, deleted_at, register_by, deleted_by, mac, os_major_version, os_minor_version, aliases, addresses, tenant_id, no_remote_control)
@@ -88,7 +87,6 @@ func (c collectorConverter) Import(ctx context.Context, rows []map[string]interf
 			continue
 		}
 		module := fieldString(src, "module")
-		ui.Logf("converter: collectors (id=%s): module %q", id, module)
 		if _, err := destDB.ExecContext(ctx, insertCollectorSQL,
 			id,
 			fieldString(src, "collector_key"),
