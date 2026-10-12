@@ -75,7 +75,7 @@ func init() {
 func ensureAgentsPrepared(agentManagerHost string) error {
 	if upgradeSkipAgentCheck {
 		ui.Warning("Skipping prepare-agents verification (--skip-agent-check)")
-		ui.Info("Agents that did not receive migrate_agent will remain on V11 after upgrade")
+		ui.Info("Agents that did not receive migrate_agent will stay on V11")
 		return nil
 	}
 

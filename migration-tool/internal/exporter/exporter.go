@@ -28,8 +28,6 @@ func New(cfg domain.InstanceConfig, totalTables int) *Exporter {
 }
 
 func (e *Exporter) Export(databases []domain.DatabaseSource, sourceHost, outputFile string) (*domain.BackupData, error) {
-	ui.Info("Starting data export")
-
 	backup := &domain.BackupData{
 		Version:    "1.0",
 		ExportedAt: time.Now(),

@@ -6,13 +6,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/config"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/converters"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/domain"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/exporter"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
-	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/postgres"
-	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/postinstall"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/remote"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/searchdata"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/pkg/ui"
@@ -206,7 +203,6 @@ func (u *Upgrader) RunUpgrade() error {
 	ui.NextSteps([]string{
 		"Verify services are running: docker service ls",
 		"Test the V12 instance",
-		fmt.Sprintf("Data file saved at: %s", u.backupFile),
 	})
 
 	return nil
@@ -292,18 +288,6 @@ func (u *Upgrader) importData() error {
 		return err
 	}
 	result.PrintSummary()
-
-	ui.StartOperation("Running post-installation queries")
-	dbConn, err := postgres.Connect(destCfg, config.DefaultDatabase)
-	if err == nil {
-		if err := postinstall.RunPostInstallQueries(dbConn); err != nil {
-			ui.Warning("Post-install queries completed with warnings: " + err.Error())
-		}
-		dbConn.Close()
-		ui.Success("Post-installation queries completed")
-	} else {
-		ui.Warning("Could not run post-installation queries")
-	}
 
 	return nil
 }

@@ -68,8 +68,6 @@ func (i *Importer) Import(inputFile string) (Result, error) {
 		}
 	}
 
-	ui.Info("Starting data import")
-
 	// Initialize progress bar
 	i.progress = ui.NewProgress(i.totalTables, "Importing tables")
 

@@ -46,16 +46,18 @@ func dataTypeOf(doc map[string]interface{}) string {
 // OrphanReport accumulates, per dataType, which document keys have no
 // destination column and how many docs carried them.
 type OrphanReport struct {
-	keys  map[string]map[string]struct{}
-	count map[string]map[string]int
-	seen  map[string]int
+	keys       map[string]map[string]struct{}
+	count      map[string]map[string]int
+	seen       map[string]int
+	orphanDocs map[string]int
 }
 
 func NewOrphanReport() *OrphanReport {
 	return &OrphanReport{
-		keys:  map[string]map[string]struct{}{},
-		count: map[string]map[string]int{},
-		seen:  map[string]int{},
+		keys:       map[string]map[string]struct{}{},
+		count:      map[string]map[string]int{},
+		seen:       map[string]int{},
+		orphanDocs: map[string]int{},
 	}
 }
 
@@ -65,7 +67,11 @@ func NewOrphanReport() *OrphanReport {
 func (r *OrphanReport) Note(ds Dataset, doc map[string]interface{}, cols ColumnSet) {
 	dt := dataTypeOf(doc)
 	r.seen[dt]++
-	for _, k := range OrphanKeys(doc, cols) {
+	orphans := OrphanKeys(doc, cols)
+	if len(orphans) > 0 {
+		r.orphanDocs[dt]++
+	}
+	for _, k := range orphans {
 		if r.keys[dt] == nil {
 			r.keys[dt] = map[string]struct{}{}
 		}
@@ -127,7 +133,7 @@ func (r *OrphanReport) Summary() string {
 		for _, k := range keys {
 			keyParts = append(keyParts, fmt.Sprintf("%s (x%d)", k, r.Count(dt, k)))
 		}
-		lines = append(lines, fmt.Sprintf("  %s (%d docs): %s", dt, r.Seen(dt), strings.Join(keyParts, ", ")))
+		lines = append(lines, fmt.Sprintf("  %s (%d docs): %s", dt, r.orphanDocs[dt], strings.Join(keyParts, ", ")))
 	}
 	return strings.Join(lines, "\n")
 }

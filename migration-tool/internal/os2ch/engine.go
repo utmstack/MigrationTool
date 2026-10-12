@@ -394,13 +394,24 @@ func (r *LoadResult) PerIndexSummary() string {
 	if len(r.PerIndex) == 0 {
 		return ""
 	}
+	sorted := make([]StreamIndex, len(r.PerIndex))
+	copy(sorted, r.PerIndex)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Index < sorted[j].Index })
+	empties := 0
 	var b strings.Builder
-	for _, si := range r.PerIndex {
+	for _, si := range sorted {
+		if si.Mapped == 0 {
+			empties++
+			continue
+		}
 		fmt.Fprintf(&b, "%s -> %s: %d docs", si.Index, si.Dataset, si.Mapped)
 		if si.Orphans > 0 {
-			fmt.Fprintf(&b, " (%d docs with orphan fields)", si.Orphans)
+			fmt.Fprintf(&b, " (%d orphan field occurrences)", si.Orphans)
 		}
 		b.WriteByte('\n')
+	}
+	if empties > 0 {
+		fmt.Fprintf(&b, "%d index(es) empty (0 docs)", empties)
 	}
 	return b.String()
 }

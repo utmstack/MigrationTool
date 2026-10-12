@@ -11,8 +11,6 @@ import (
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/converters"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/domain"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
-	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/postgres"
-	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/postinstall"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/remote"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/yaml"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/pkg/ui"
@@ -47,7 +45,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 	ui.Header("UTMStack Migration Tool - Import")
 
 	// Load configuration
-	ui.Step(1, 6, "Loading configuration")
+	ui.Step(1, 5, "Loading configuration")
 	cfg, err := config.LoadConfig(importConfigFile)
 	if err != nil {
 		ui.Error(fmt.Sprintf("Failed to load config: %v", err))
@@ -61,7 +59,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 	ui.Success("Configuration loaded")
 
 	// Validate data file
-	ui.Step(2, 6, "Validating data file")
+	ui.Step(2, 5, "Validating data file")
 	absInputFile, err := filepath.Abs(importInputFile)
 	if err != nil {
 		ui.Warning(fmt.Sprintf("Could not resolve absolute path: %v, using relative path", err))
@@ -101,7 +99,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 		})
 
 	// Connect to destination via SSH to manage ports
-	ui.Step(3, 6, "Connecting to destination instance")
+	ui.Step(3, 5, "Connecting to destination instance")
 	var sshClient *remote.SSHClient
 	var portOpened bool
 
@@ -167,7 +165,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 	}
 
 	// Import data
-	ui.Step(4, 6, "Importing data to destination database")
+	ui.Step(4, 5, "Importing data to destination database")
 	converters.SetIntegrationsConfigDir(cfg.Destination.IntegrationsConfigDir)
 	imp := importer.New(cfg.Destination, totalTables)
 
@@ -178,22 +176,8 @@ func runImport(cmd *cobra.Command, args []string) error {
 	}
 	result.PrintSummary()
 
-	// Run post-install queries
-	ui.Step(5, 6, "Running post-installation queries")
-	dbConn, err := postgres.Connect(cfg.Destination, config.DefaultDatabase)
-	if err == nil {
-		if err := postinstall.RunPostInstallQueries(dbConn); err != nil {
-			ui.Warning(fmt.Sprintf("Post-installation queries completed with errors: %v", err))
-		} else {
-			ui.Success("Post-installation queries completed")
-		}
-		dbConn.Close()
-	} else {
-		ui.Warning("Could not run post-installation queries (non-critical)")
-	}
-
 	// Sync internal key
-	ui.Step(6, 6, "Synchronizing security credentials")
+	ui.Step(5, 5, "Synchronizing security credentials")
 	if backup.InternalKey != "" && sshClient != nil {
 		existingContent, err := sshClient.ReadFile(config.UTMStackYMLPath)
 		var updatedContent []byte

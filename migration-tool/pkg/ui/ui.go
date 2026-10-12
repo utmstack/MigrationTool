@@ -90,7 +90,7 @@ func Info(message string) {
 func Detail(key, value string) {
 	// Fixed width for key column (including colon)
 	keyWithColon := key + ":"
-	fmt.Printf("  %-16s%s\n", Dim(keyWithColon), value)
+	fmt.Printf("  %-15s%s\n", Dim(keyWithColon), value)
 }
 
 // Blank prints a blank line

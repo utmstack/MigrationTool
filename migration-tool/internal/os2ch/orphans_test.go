@@ -3,6 +3,7 @@ package os2ch
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -75,4 +76,21 @@ func TestOrphanReportNoOrphans(t *testing.T) {
 		t.Error("summary should not be empty")
 	}
 	_ = json.Valid([]byte("x")) // keep import
+}
+
+func TestOrphanReportDocsCarryingOrphans(t *testing.T) {
+	cols := NewColumnSet("id", "dataType")
+	r := NewOrphanReport()
+	// Two docs with orphans (one also carries two keys), one clean doc.
+	r.Note(DatasetLogs, map[string]interface{}{"id": "1", "dataType": "o365", "a": "x", "b": "y"}, cols)
+	r.Note(DatasetLogs, map[string]interface{}{"id": "2", "dataType": "o365", "a": "x"}, cols)
+	r.Note(DatasetLogs, map[string]interface{}{"id": "3", "dataType": "o365"}, cols)
+
+	s := r.Summary()
+	if !strings.Contains(s, "o365 (2 docs):") {
+		t.Errorf("summary should report the 2 docs carrying orphans, got:\n%s", s)
+	}
+	if r.Count("o365", "a") != 2 || r.Count("o365", "b") != 1 {
+		t.Errorf("per-key occurrence counts off: a=%d b=%d", r.Count("o365", "a"), r.Count("o365", "b"))
+	}
 }

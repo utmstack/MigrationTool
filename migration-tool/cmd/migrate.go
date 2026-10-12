@@ -13,8 +13,6 @@ import (
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/converters"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/exporter"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
-	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/postgres"
-	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/postinstall"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/remote"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/searchdata"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/yaml"
@@ -57,7 +55,7 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	ui.Header("UTMStack Migration Tool - Full Migration")
 
 	// Load configuration
-	ui.Step(1, 8, "Loading configuration")
+	ui.Step(1, 7, "Loading configuration")
 	cfg, err := config.LoadConfig(migrateConfigFile)
 	if err != nil {
 		ui.Error(fmt.Sprintf("Failed to load config: %v", err))
@@ -100,17 +98,22 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		totalTables += len(db.Tables)
 	}
 
+	searchData := "no"
+	if migrateWithData {
+		searchData = "yes (OpenSearch -> ClickHouse)"
+	}
 	ui.SummaryOrdered("Migration Details",
-		[]string{"Source", "Destination", "Tables", "Data File"},
+		[]string{"Source", "Destination", "Tables", "Search Data", "Data File"},
 		map[string]string{
 			"Source":      cfg.Source.Host,
 			"Destination": cfg.Destination.Host,
 			"Tables":      fmt.Sprintf("%d tables from %d databases", totalTables, len(cfg.Databases)),
+			"Search Data": searchData,
 			"Data File":   absBackupFile,
 		})
 
 	// Connect to source via SSH to manage ports
-	ui.Step(2, 8, "Connecting to source instance")
+	ui.Step(2, 7, "Connecting to source instance")
 	var sourceSSH *remote.SSHClient
 	var sourcePortOpened bool
 
@@ -176,7 +179,7 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Export data from source
-	ui.Step(3, 8, "Exporting data from source database")
+	ui.Step(3, 7, "Exporting data from source database")
 	exp := exporter.New(cfg.Source, totalTables)
 	backup, err := exp.Export(cfg.Databases, cfg.Source.Host, backupFile)
 	if err != nil {
@@ -201,7 +204,7 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Extract internal key from source
-	ui.Step(4, 8, "Extracting security credentials from source")
+	ui.Step(4, 7, "Extracting security credentials from source")
 	if sourceSSH != nil {
 		content, err := sourceSSH.ReadFile(config.UTMStackYMLPath)
 		if err == nil {
@@ -226,7 +229,7 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	// Note: Source port will be closed by defer when sourceSSH.Close() is called
 
 	// Connect to destination via SSH to manage ports
-	ui.Step(5, 8, "Connecting to destination instance")
+	ui.Step(5, 7, "Connecting to destination instance")
 	var destSSH *remote.SSHClient
 	var destPortOpened bool
 
@@ -295,7 +298,7 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Import data to destination
-	ui.Step(6, 8, "Importing data to destination database")
+	ui.Step(6, 7, "Importing data to destination database")
 	converters.SetIntegrationsConfigDir(cfg.Destination.IntegrationsConfigDir)
 	if destSSH != nil {
 		// Plugin configs are YAML on the destination host; route writes over SSH.
@@ -310,22 +313,8 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	}
 	result.PrintSummary()
 
-	// Run post-install queries
-	ui.Step(7, 8, "Running post-installation queries")
-	dbConn, err := postgres.Connect(cfg.Destination, config.DefaultDatabase)
-	if err == nil {
-		if err := postinstall.RunPostInstallQueries(dbConn); err != nil {
-			ui.Warning(fmt.Sprintf("Post-installation queries completed with errors: %v", err))
-		} else {
-			ui.Success("Post-installation queries completed")
-		}
-		dbConn.Close()
-	} else {
-		ui.Warning("Could not run post-installation queries")
-	}
-
 	// Sync internal key to destination
-	ui.Step(8, 8, "Synchronizing security credentials to destination")
+	ui.Step(7, 7, "Synchronizing security credentials to destination")
 	if backup.InternalKey != "" && destSSH != nil {
 		existingContent, err := destSSH.ReadFile(config.UTMStackYMLPath)
 		var updatedContent []byte
@@ -364,10 +353,8 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	ui.FinalSuccess("Migration completed successfully")
 
 	ui.NextSteps([]string{
-		"Restart UTMStack services: docker stack deploy -c compose.yml utmstack",
 		"Verify services are running: docker service ls",
 		"Test the destination instance",
-		fmt.Sprintf("Data file saved at: %s", absBackupFile),
 	})
 
 	// Ask about data file deletion
