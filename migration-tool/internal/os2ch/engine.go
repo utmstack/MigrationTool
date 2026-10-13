@@ -34,20 +34,19 @@ type StreamIndex struct {
 	Index    string
 	Dataset  Dataset
 	Mapped   int
-	Orphans  int
 	SampleID string
 }
 
-// Engine copies V11 OpenSearch data into V12 ClickHouse through an NDJSON
-// dump: Dump reads the source indices to disk (in parallel), Load feeds each
-// file into ClickHouse with one bulk insert. Both phases are resumable via
-// the manifest.
+// Engine copies V11 OpenSearch data into V12 ClickHouse. StreamAll pipes each
+// index straight into a single atomic insert (migrate, both endpoints live);
+// Dump and Load move it via NDJSON on disk (upgrade, where the source dies
+// before the destination ClickHouse exists). All three are resumable via a
+// manifest.
 type Engine struct {
 	os      *OSClient
-	ch      *CHWriter
+	ch      CHClient
 	batch   int
 	log     *slog.Logger
-	orphans *OrphanReport
 	onIndex IndexProgress
 }
 
@@ -75,12 +74,11 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		log = slog.Default()
 	}
 	e := &Engine{
-		os:      NewOSClient(cfg.OS),
-		batch:   batch,
-		log:     log,
-		orphans: NewOrphanReport(),
+		os:    NewOSClient(cfg.OS),
+		batch: batch,
+		log:   log,
 	}
-	if cfg.CH.Addr != "" {
+	if cfg.CH.Addr != "" || cfg.CH.HTTPAddr != "" {
 		ch, err := NewCHWriter(ctx, cfg.CH, log)
 		if err != nil {
 			return nil, err
@@ -96,14 +94,6 @@ func (e *Engine) Close() error {
 		return nil
 	}
 	return e.ch.Close()
-}
-
-// OrphansSummary returns the orphan-field report collected during Load.
-func (e *Engine) OrphansSummary() string {
-	if e.orphans == nil {
-		return ""
-	}
-	return e.orphans.Summary()
 }
 
 // OSIndices lists all in-scope V11 indices grouped by destination dataset,
@@ -419,9 +409,6 @@ func (r *LoadResult) PerIndexSummary() string {
 			continue
 		}
 		fmt.Fprintf(&b, "%s -> %s: %d docs", si.Index, si.Dataset, si.Mapped)
-		if si.Orphans > 0 {
-			fmt.Fprintf(&b, " (%d orphan field occurrences)", si.Orphans)
-		}
 		b.WriteByte('\n')
 	}
 	if empties > 0 {
@@ -465,18 +452,12 @@ func (e *Engine) Load(ctx context.Context, dir string) (*LoadResult, error) {
 			res.Skipped++
 			continue
 		}
-		table := TableFor(rec.Dataset)
-		cols, err := e.ch.DescribeColumns(ctx, rec.Dataset)
-		if err != nil {
-			return nil, fmt.Errorf("describe %s: %w", table, err)
-		}
 		path := filepath.Join(dir, rec.File)
 		f, err := os.Open(path)
 		if err != nil {
 			return nil, fmt.Errorf("open %s: %w", rec.File, err)
 		}
 		si := StreamIndex{Index: rec.Index, Dataset: rec.Dataset}
-		orphansBefore := e.orphans.TotalOrphans()
 
 		pr, pw := io.Pipe()
 		go func() {
@@ -493,7 +474,6 @@ func (e *Engine) Load(ctx context.Context, dir string) (*LoadResult, error) {
 					return
 				}
 				doc = MapDocument(rec.Dataset, doc)
-				e.orphans.Note(rec.Dataset, doc, cols)
 				b, err := MarshalRow(doc)
 				if err != nil {
 					pw.CloseWithError(err)
@@ -518,7 +498,6 @@ func (e *Engine) Load(ctx context.Context, dir string) (*LoadResult, error) {
 			return nil, err
 		}
 		f.Close()
-		si.Orphans = e.orphans.TotalOrphans() - orphansBefore
 		res.PerIndex = append(res.PerIndex, si)
 		res.PerDataset[rec.Dataset] += si.Mapped
 		res.Total += si.Mapped
@@ -534,7 +513,145 @@ func (e *Engine) Load(ctx context.Context, dir string) (*LoadResult, error) {
 			e.onIndex(rec.Index, rec.Dataset, si.Mapped)
 		}
 	}
+	for _, si := range res.PerIndex {
+		res.PerDataset[si.Dataset] += si.Mapped
+		res.Total += si.Mapped
+	}
 	return res, nil
+}
+
+// streamOutcome carries one worker result back to the collector.
+type streamOutcome struct {
+	si  StreamIndex
+	err error
+}
+
+// StreamAll copies every in-scope index straight into ClickHouse with no
+// intermediate dump: each index is one parallel worker that scrolls the
+// source and pipes mapped JSONEachRow rows into a single atomic InsertFormat
+// statement. A manifest in stateDir (when non-empty) makes the run resumable:
+// already-streamed indices are skipped on retry, which matters because a
+// failed InsertTable leaves zero rows (atomic) but a completed one is committed.
+func (e *Engine) StreamAll(ctx context.Context, stateDir string) (*LoadResult, error) {
+	if e.ch == nil {
+		return nil, fmt.Errorf("engine has no ClickHouse connection for StreamAll")
+	}
+	var done map[string]bool
+	var manifestPath string
+	if stateDir != "" {
+		manifestPath = filepath.Join(stateDir, "stream.yaml")
+		done = e.readStreamManifest(manifestPath)
+	}
+	grouped, _, err := e.OSIndices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	res := &LoadResult{PerDataset: map[Dataset]int{}, SampleIDs: map[Dataset]string{}}
+
+	var jobs []job
+	for _, ds := range []Dataset{DatasetLogs, DatasetAlerts, DatasetStatistics} {
+		sort.Strings(grouped[ds])
+		for _, idx := range grouped[ds] {
+			if done != nil && done[idx] {
+				res.Skipped++
+				continue
+			}
+			jobs = append(jobs, job{ds: ds, idx: idx})
+		}
+	}
+	workers := dumpWorkers
+	if len(jobs) < workers {
+		workers = len(jobs)
+	}
+	if workers > 0 {
+		in := make(chan job)
+		outc := make(chan streamOutcome, len(jobs))
+		for i := 0; i < workers; i++ {
+			go func() {
+				for j := range in {
+					si, err := e.streamOne(ctx, j.ds, j.idx)
+					outc <- streamOutcome{si: si, err: err}
+				}
+			}()
+		}
+		go func() {
+			for _, j := range jobs {
+				in <- j
+			}
+			close(in)
+		}()
+		for range jobs {
+			o := <-outc
+			if o.err != nil {
+				return nil, o.err
+			}
+			if o.si.Mapped == 0 {
+				continue
+			}
+			res.PerIndex = append(res.PerIndex, o.si)
+			res.PerDataset[o.si.Dataset] += o.si.Mapped
+			res.Total += o.si.Mapped
+			if res.SampleIDs[o.si.Dataset] == "" {
+				res.SampleIDs[o.si.Dataset] = o.si.SampleID
+			}
+			if done != nil {
+				done[o.si.Index] = true
+				e.writeStreamManifest(manifestPath, done)
+			}
+			if e.onIndex != nil {
+				e.onIndex(o.si.Index, o.si.Dataset, o.si.Mapped)
+			}
+		}
+	}
+	return res, nil
+}
+
+// streamOne maps and streams a single index: the scroll's pull-based onPage
+// pushes JSONEachRow rows through an io.Pipe into one InsertFormat statement.
+func (e *Engine) streamOne(ctx context.Context, ds Dataset, index string) (StreamIndex, error) {
+	var si StreamIndex
+	si.Index, si.Dataset = index, ds
+	table := TableFor(ds)
+
+	pr, pw := io.Pipe()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- e.ch.InsertTable(ctx, table, pr)
+	}()
+
+	enc := bufio.NewWriter(pw)
+	_, scrollErr := e.os.Scroll(ctx, index, e.batch, func(id string, doc map[string]interface{}) error {
+		doc = MapDocument(ds, doc)
+		if si.SampleID == "" {
+			si.SampleID = id
+		}
+		line, err := MarshalRow(doc)
+		if err != nil {
+			return err
+		}
+		if _, err := enc.WriteString(line + "\n"); err != nil {
+			return err
+		}
+		if err := enc.Flush(); err != nil {
+			return err
+		}
+		si.Mapped++
+		return nil
+	})
+	if scrollErr != nil {
+		pw.CloseWithError(scrollErr)
+		return si, scrollErr
+	}
+	if err := enc.Flush(); err != nil {
+		pw.CloseWithError(err)
+		return si, err
+	}
+	pw.Close()
+
+	if err := <-errCh; err != nil {
+		return si, fmt.Errorf("stream %s -> %s: %w", index, table, err)
+	}
+	return si, nil
 }
 
 func sanitizeFilename(s string) string {
@@ -565,6 +682,27 @@ func readManifest(path string) (*dumpManifest, error) {
 		return nil, err
 	}
 	return &m, nil
+}
+
+type streamState struct {
+	Done map[string]bool `yaml:"done"`
+}
+
+func (e *Engine) readStreamManifest(path string) map[string]bool {
+	s := &streamState{Done: map[string]bool{}}
+	if in, err := os.ReadFile(path); err == nil {
+		_ = yaml.Unmarshal(in, s)
+	}
+	if s.Done == nil {
+		s.Done = map[string]bool{}
+	}
+	return s.Done
+}
+
+func (e *Engine) writeStreamManifest(path string, done map[string]bool) {
+	if out, err := yaml.Marshal(streamState{Done: done}); err == nil {
+		_ = os.WriteFile(path, out, 0o644)
+	}
 }
 
 // VerifyDataset counts rows in the destination table and checks that a sample

@@ -16,19 +16,29 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// CHWriter inserts mapped rows into a ClickHouse table. It mirrors the V12
-// tools/os2ch reference: inserts go over the native protocol (9000) as
-// JSONEachRow, because the HTTP interface rejects the RFC3339 timestamps and
-// nested objects these documents carry. Count and connectivity checks use the
-// HTTP interface (8123).
+// CHWriter inserts mapped rows into a ClickHouse table. Native inserts go
+// over 9000; streaming (InsertFormat) and the count/connectivity checks go
+// over HTTP 8123.
 type CHWriter struct {
 	native     driver.Conn
+	http       driver.Conn
 	httpClient *http.Client
 	base       string
 	user       string
 	pass       string
 	database   string
 	log        *slog.Logger
+}
+
+// CHClient is the ClickHouse surface the engine depends on: write (stream or
+// file) and read counts for verification. *CHWriter implements it; tests
+// inject a fake.
+type CHClient interface {
+	InsertTable(ctx context.Context, table string, r io.Reader) error
+	InsertFile(ctx context.Context, ds Dataset, r io.Reader) error
+	CountRows(ctx context.Context, ds Dataset) (int64, error)
+	SamplePresent(ctx context.Context, ds Dataset, id string) (bool, error)
+	Close() error
 }
 
 type CHConfig struct {
@@ -46,30 +56,64 @@ func NewCHWriter(ctx context.Context, cfg CHConfig, logger *slog.Logger) (*CHWri
 	if cfg.User == "" {
 		cfg.User = "default"
 	}
-	// Bulk inserts of large NDJSON files can take minutes on small VMs while
-	// ClickHouse merges, so the read timeout must comfortably exceed the
-	// default 53s.
-	conn, err := clickhouse.Open(&clickhouse.Options{
-		Addr: []string{cfg.Addr},
-		Auth: clickhouse.Auth{
-			Database: cfg.Database,
-			Username: cfg.User,
-			Password: cfg.Password,
-		},
-		ReadTimeout: 30 * time.Minute,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("open clickhouse native: %w", err)
+	if cfg.Addr == "" && cfg.HTTPAddr == "" {
+		return nil, fmt.Errorf("CHConfig needs Addr (native) or HTTPAddr")
 	}
-	if err := conn.Ping(ctx); err != nil {
-		return nil, fmt.Errorf("ping clickhouse: %w", err)
+	var conn driver.Conn
+	if cfg.Addr != "" {
+		// Bulk inserts of large NDJSON files can take minutes on small VMs while
+		// ClickHouse merges, so the read timeout must comfortably exceed the
+		// default 53s.
+		var err error
+		conn, err = clickhouse.Open(&clickhouse.Options{
+			Addr: []string{cfg.Addr},
+			Auth: clickhouse.Auth{
+				Database: cfg.Database,
+				Username: cfg.User,
+				Password: cfg.Password,
+			},
+			ReadTimeout: 30 * time.Minute,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("open clickhouse native: %w", err)
+		}
+		if err := conn.Ping(ctx); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("ping clickhouse: %w", err)
+		}
 	}
 	base := cfg.HTTPAddr
 	if base == "" {
 		base = "http://" + strings.SplitN(cfg.Addr, ":", 2)[0] + ":8123"
 	}
+	// httpQuery builds raw REST URLs, which need the scheme; the driver adds
+	// it itself, so normalize here.
+	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+		base = "http://" + base
+	}
+	httpConn, err := clickhouse.Open(&clickhouse.Options{
+		Addr:     []string{strings.TrimPrefix(base, "http://")},
+		Protocol: clickhouse.HTTP,
+		Auth: clickhouse.Auth{
+			Database: cfg.Database,
+			Username: cfg.User,
+			Password: cfg.Password,
+		},
+		Compression: &clickhouse.Compression{Method: clickhouse.CompressionGZIP},
+		ReadTimeout: 90 * time.Minute,
+	})
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("open clickhouse http: %w", err)
+	}
+	if err := httpConn.Ping(ctx); err != nil {
+		conn.Close()
+		httpConn.Close()
+		return nil, fmt.Errorf("ping clickhouse http: %w", err)
+	}
 	return &CHWriter{
 		native:     conn,
+		http:       httpConn,
 		httpClient: &http.Client{Timeout: 60 * time.Second},
 		base:       strings.TrimSuffix(base, "/"),
 		user:       cfg.User,
@@ -80,10 +124,16 @@ func NewCHWriter(ctx context.Context, cfg CHConfig, logger *slog.Logger) (*CHWri
 }
 
 func (w *CHWriter) Close() error {
-	if w.native == nil {
-		return nil
+	var first error
+	if w.native != nil {
+		first = w.native.Close()
 	}
-	return w.native.Close()
+	if w.http != nil {
+		if err := w.http.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 // TableFor maps a dataset to its ClickHouse table name.
@@ -104,12 +154,10 @@ func TableFor(ds Dataset) string {
 // so a single large NDJSON file never holds an unbounded in-memory string.
 const insertChunkBytes = 64 * 1024 * 1024
 
-// InsertFile loads one NDJSON reader into the dataset's table. It reads the
-// rows in large chunks and issues one AsyncInsert per chunk (wait=true), so
-// hundreds of thousands of documents become a handful of bulk inserts instead
-// of one awaited insert per small batch, which is what made the streaming path
-// crawl. A native-protocol Exec does not accept an io.Reader, so the rows are
-// embedded in the query text, matching the proven V12 os2ch reference.
+// InsertFile loads one NDJSON reader into the dataset's table in large
+// chunks, issuing one awaited AsyncInsert per chunk. A native-protocol Exec
+// does not accept an io.Reader, so the rows are embedded in the query text,
+// matching the proven V12 os2ch reference.
 func (w *CHWriter) InsertFile(ctx context.Context, ds Dataset, r io.Reader) error {
 	table := TableFor(ds)
 	if table == "" {
@@ -151,6 +199,15 @@ func (w *CHWriter) insertChunk(ctx context.Context, table string, chunk *bytes.B
 	}
 	chunk.Reset()
 	return nil
+}
+
+// InsertTable streams one JSONEachRow reader into the named table as a
+// single atomic statement; a failed insert lands no rows.
+func (w *CHWriter) InsertTable(ctx context.Context, table string, r io.Reader) error {
+	if w.http == nil {
+		return fmt.Errorf("no HTTP ClickHouse connection for %s", table)
+	}
+	return w.http.InsertFormat(ctx, "JSONEachRow", "INSERT INTO "+table, r)
 }
 
 // CountRows returns the total row count of a dataset's table via HTTP.
@@ -195,35 +252,4 @@ func (w *CHWriter) httpQuery(ctx context.Context, q string) ([]byte, error) {
 		return nil, fmt.Errorf("CH %s: %s: %s", q, resp.Status, truncate(b, 400))
 	}
 	return b, nil
-}
-
-// DescribeColumns returns the destination table's column names for a dataset,
-// read live from ClickHouse so the orphan report compares against the schema
-// that actually exists (not a hardcoded copy).
-func (w *CHWriter) DescribeColumns(ctx context.Context, ds Dataset) (ColumnSet, error) {
-	table := TableFor(ds)
-	if table == "" {
-		return nil, fmt.Errorf("unknown dataset %q", ds)
-	}
-	body, err := w.httpQuery(ctx, "DESCRIBE TABLE "+table)
-	if err != nil {
-		return nil, err
-	}
-	return ParseDescribeColumns(string(body)), nil
-}
-
-// ParseDescribeColumns splits a DESCRIBE TABLE result into its column names.
-// Each line is <name>\t<type>\t[comment]; we only need the name.
-func ParseDescribeColumns(body string) ColumnSet {
-	cs := make(ColumnSet)
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if name, _, ok := strings.Cut(line, "\t"); ok {
-			cs[name] = struct{}{}
-		}
-	}
-	return cs
 }

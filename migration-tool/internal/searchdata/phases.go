@@ -27,11 +27,12 @@ type Config struct {
 }
 
 type Phases struct {
-	cfg     Config
-	dumpDir string
-	log     *slog.Logger
-	dumped  bool
-	loaded  bool
+	cfg      Config
+	dumpDir  string
+	log      *slog.Logger
+	dumped   bool
+	loaded   bool
+	streamed bool
 }
 
 func NewPhases(cfg Config) (*Phases, error) {
@@ -49,12 +50,82 @@ func NewPhases(cfg Config) (*Phases, error) {
 
 func (p *Phases) DumpDir() string { return p.dumpDir }
 
-// SetDestExec attaches the destination executor after the dump phase, because
-// in migrate the destination SSH is only established once the dump is done.
+// SetDestExec attaches the destination executor once it is available, because
+// in migrate the destination SSH is only established after the Postgres import.
 func (p *Phases) SetDestExec(exec remote.CommandExecutor) {
 	if p.cfg.DestExec == nil && exec != nil {
 		p.cfg.DestExec = exec
 	}
+}
+
+// RunStream copies OpenSearch to ClickHouse directly, over the wire: source
+// 9200 and destination 8123 stay published for the whole run and no NDJSON is
+// written to disk. It is the --with-data path for migrate, where both
+// endpoints are alive at the same time; upgrade keeps RunDump/RunLoad.
+func (p *Phases) RunStream(ctx context.Context) error {
+	if p.streamed {
+		return nil
+	}
+	if p.cfg.DestExec == nil {
+		return fmt.Errorf("no destination executor: --with-data requires SSH access to the destination")
+	}
+	osPass, err := p.composeEnv(p.cfg.SourceExec, p.cfg.SourceSSHUser, "node1", osPasswordVars, "OpenSearch admin password in source compose")
+	if err != nil {
+		return err
+	}
+	chPass, err := p.composeEnv(p.cfg.DestExec, p.cfg.DestSSHUser, "clickhouse", []string{"CLICKHOUSE_PASSWORD"}, "ClickHouse password in destination compose")
+	if err != nil {
+		return err
+	}
+	defer p.unpublish(p.cfg.SourceExec, "utmstack_node1", "9200:9200")
+	defer p.unpublish(p.cfg.DestExec, "utmstack_clickhouse", "8123:8123")
+	if err := publishPorts(p.cfg.SourceExec, "utmstack_node1", []string{"9200:9200"}); err != nil {
+		return fmt.Errorf("publish source OpenSearch 9200: %w", err)
+	}
+	if err := publishPorts(p.cfg.DestExec, "utmstack_clickhouse", []string{"8123:8123"}); err != nil {
+		return fmt.Errorf("publish destination ClickHouse 8123: %w", err)
+	}
+	ui.Success("Source OpenSearch and destination ClickHouse ports published")
+	time.Sleep(10 * time.Second)
+
+	engine, err := os2ch.NewEngine(ctx, os2ch.EngineConfig{
+		OS:  os2ch.OSConfig{Host: p.cfg.SourceHost + ":9200", User: "admin", Password: osPass},
+		CH:  os2ch.CHConfig{HTTPAddr: p.cfg.DestHost + ":8123", User: "default", Password: chPass, Database: "utmstack"},
+		Log: p.log,
+	})
+	if err != nil {
+		return fmt.Errorf("os2ch engine: %w", err)
+	}
+	defer engine.Close()
+
+	// The stream manifest lives under the dump dir so a crashed run can be
+	// resumed without re-streaming committed indices. Nothing else is written
+	// to disk in stream mode.
+	stateDir := filepath.Join(p.dumpDir, "stream")
+	ui.StartOperation("Streaming OpenSearch into ClickHouse")
+	engine.SetIndexProgress(func(index string, ds os2ch.Dataset, docs int) {
+		ui.Info(fmt.Sprintf("streamed %s: %d docs", index, docs))
+	})
+	sres, err := engine.StreamAll(ctx, stateDir)
+	if err != nil {
+		ui.Warning("Stream state preserved at " + stateDir + " for re-run (committed indices will be skipped)")
+		return fmt.Errorf("stream: %w", err)
+	}
+
+	for _, ds := range []os2ch.Dataset{os2ch.DatasetLogs, os2ch.DatasetAlerts, os2ch.DatasetStatistics} {
+		vr := engine.VerifyDataset(ctx, ds, int64(sres.PerDataset[ds]), sres.SampleID(ds))
+		switch {
+		case vr.Error != "":
+			ui.Warning(fmt.Sprintf("verify %s: %s", ds, vr.Error))
+		case sres.PerDataset[ds] == 0:
+		default:
+			ui.Success(fmt.Sprintf("%s verified: %d docs in destination", ds, vr.CHDocs))
+		}
+	}
+	p.streamed = true
+	os.RemoveAll(stateDir)
+	ui.Success(fmt.Sprintf("Streamed %d documents into ClickHouse (%d skipped)", sres.Total, sres.Skipped))
+	return nil
 }
 
 func (p *Phases) RunDump(ctx context.Context) error {
@@ -144,12 +215,6 @@ func (p *Phases) RunLoad(ctx context.Context) error {
 		}
 	}
 
-	if s := engine.OrphansSummary(); s != "" {
-		ui.Info("Orphan field report (V11 fields with no V12 column):")
-		for _, line := range strings.Split(s, "\n") {
-			ui.Info("  " + line)
-		}
-	}
 	p.loaded = true
 	os.RemoveAll(p.dumpDir)
 	return nil

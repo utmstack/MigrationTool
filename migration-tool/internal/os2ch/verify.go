@@ -43,7 +43,8 @@ func VerifyOne(ctx context.Context, v verifyer, ds Dataset, osCount int64, sampl
 		return res
 	}
 
-	if sampleID == "" {
+	if sampleID == "" || ds == DatasetStatistics {
+		// Statistics has no id column; the row count is its verification.
 		return res
 	}
 	found, err := v.SamplePresent(ctx, ds, sampleID)

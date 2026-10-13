@@ -187,17 +187,12 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Dump the V11 OpenSearch tenant data now, while the source is intact,
-	// so the destructive part of the migration never runs against an index
-	// that cannot be re-read. The dump is loaded at the end of the run.
+	// Stream the V11 OpenSearch tenant data into the V12 ClickHouse and verify
+	// it. Both endpoints are live at this point, so no disk dump is involved.
 	if migrateWithData {
 		phases, err := newSearchPhases(cfg, sourceSSH)
 		if err != nil {
 			ui.Error(err.Error())
-			return err
-		}
-		if err := phases.RunDump(context.Background()); err != nil {
-			ui.Error(fmt.Sprintf("Search data dump failed: %v", err))
 			return err
 		}
 		migrateSearchPhases = phases
@@ -342,9 +337,10 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		ui.Info("No SSH configured for destination, skipping credential sync")
 	}
 
-	// Load the dumped OpenSearch data into the V12 ClickHouse and verify it.
+	// Stream the V11 OpenSearch tenant data into the V12 ClickHouse and verify
+	// it. Both endpoints are live at this point, so no disk dump is involved.
 	if migrateSearchPhases != nil {
-		if err := migrateSearchPhases.RunLoad(context.Background()); err != nil {
+		if err := migrateSearchPhases.RunStream(context.Background()); err != nil {
 			ui.Error(fmt.Sprintf("Search data migration failed: %v", err))
 			return err
 		}

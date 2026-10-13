@@ -7,19 +7,6 @@ import (
 	"testing"
 )
 
-func TestParseDescribeColumns(t *testing.T) {
-	body := "tenantId\tLowCardinality(String)\n@timestamp\tDateTime64(3, 'UTC')\nid\tString\n\t\n"
-	cs := ParseDescribeColumns(body)
-	for _, want := range []string{"tenantId", "@timestamp", "id"} {
-		if _, ok := cs[want]; !ok {
-			t.Errorf("column %q missing from %v", want, cs)
-		}
-	}
-	if len(cs) != 3 {
-		t.Errorf("parsed %d columns, want 3", len(cs))
-	}
-}
-
 func TestCHWriterHTTPQueries(t *testing.T) {
 	var lastQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -29,8 +16,6 @@ func TestCHWriterHTTPQueries(t *testing.T) {
 			w.Write([]byte("1"))
 		case lastQuery == "SELECT count() FROM utmstack.logs":
 			w.Write([]byte("42"))
-		case lastQuery == "DESCRIBE TABLE utmstack.logs":
-			w.Write([]byte("tenantId\tLowCardinality(String)\n@timestamp\tDateTime64(3, 'UTC')\n"))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -54,14 +39,6 @@ func TestCHWriterHTTPQueries(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected sample id found")
-	}
-
-	cols, err := w.DescribeColumns(ctx, DatasetLogs)
-	if err != nil {
-		t.Fatalf("DescribeColumns: %v", err)
-	}
-	if len(cols) != 2 {
-		t.Fatalf("columns = %d, want 2", len(cols))
 	}
 
 	// Statistics rejects sample lookups (no id column).
