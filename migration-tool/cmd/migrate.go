@@ -13,6 +13,7 @@ import (
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/converters"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/exporter"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
+	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/keysync"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/remote"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/searchdata"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/yaml"
@@ -308,28 +309,11 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	}
 	result.PrintSummary()
 
-	// Sync internal key to destination
 	ui.Step(7, 7, "Synchronizing security credentials to destination")
-	if backup.InternalKey != "" && destSSH != nil {
-		existingContent, err := destSSH.ReadFile(config.UTMStackYMLPath)
-		var updatedContent []byte
-
-		if err != nil {
-			updatedContent = fmt.Appendf(nil, "internal_key: %s\n", backup.InternalKey)
-		} else {
-			updatedContent, err = yaml.UpdateInternalKeyInYAML(existingContent, backup.InternalKey)
-			if err != nil {
-				ui.Warning(fmt.Sprintf("Could not update YAML: %v", err))
-				updatedContent = fmt.Appendf(nil, "internal_key: %s\n", backup.InternalKey)
-			}
-		}
-
-		if updatedContent != nil {
-			if err := destSSH.WriteFile(config.UTMStackYMLPath, updatedContent, 0600); err != nil {
-				ui.Warning("Could not write credentials to destination")
-			} else {
-				ui.Success("Security credentials synchronized to destination")
-			}
+	if destSSH != nil {
+		if err := keysync.Sync(destSSH, cfg.Destination.SSHUser, backup.InternalKey); err != nil {
+			ui.Error(fmt.Sprintf("Internal key sync failed: %v", err))
+			return err
 		}
 	} else if backup.InternalKey == "" {
 		ui.Info("No internal key to sync")

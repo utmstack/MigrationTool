@@ -11,8 +11,8 @@ import (
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/converters"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/domain"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
+	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/keysync"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/remote"
-	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/yaml"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/pkg/ui"
 	goyaml "gopkg.in/yaml.v3"
 )
@@ -176,28 +176,11 @@ func runImport(cmd *cobra.Command, args []string) error {
 	}
 	result.PrintSummary()
 
-	// Sync internal key
 	ui.Step(5, 5, "Synchronizing security credentials")
-	if backup.InternalKey != "" && sshClient != nil {
-		existingContent, err := sshClient.ReadFile(config.UTMStackYMLPath)
-		var updatedContent []byte
-
-		if err != nil {
-			updatedContent = fmt.Appendf(nil, "internal_key: %s\n", backup.InternalKey)
-		} else {
-			updatedContent, err = yaml.UpdateInternalKeyInYAML(existingContent, backup.InternalKey)
-			if err != nil {
-				ui.Warning(fmt.Sprintf("Could not update YAML: %v", err))
-				updatedContent = fmt.Appendf(nil, "internal_key: %s\n", backup.InternalKey)
-			}
-		}
-
-		if updatedContent != nil {
-			if err := sshClient.WriteFile(config.UTMStackYMLPath, updatedContent, 0600); err != nil {
-				ui.Warning("Could not write credentials file")
-			} else {
-				ui.Success("Security credentials synchronized")
-			}
+	if sshClient != nil {
+		if err := keysync.Sync(sshClient, cfg.Destination.SSHUser, backup.InternalKey); err != nil {
+			ui.Error(fmt.Sprintf("Internal key sync failed: %v", err))
+			return err
 		}
 	} else if backup.InternalKey == "" {
 		ui.Info("No credentials in data file, skipping sync")
@@ -208,7 +191,6 @@ func runImport(cmd *cobra.Command, args []string) error {
 	ui.FinalSuccess("Import completed successfully")
 
 	ui.NextSteps([]string{
-		"Restart UTMStack services: docker stack deploy -c compose.yml utmstack",
 		"Verify services are running: docker service ls",
 		"Test the V12 instance",
 	})

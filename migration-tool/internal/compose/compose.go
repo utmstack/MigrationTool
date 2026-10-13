@@ -2,6 +2,7 @@ package compose
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/config"
@@ -75,4 +76,19 @@ func FindComposeEnvVar(content []byte, serviceKey, varName string) (string, erro
 // executors.
 type ReadFileExecutor interface {
 	ReadFile(path string) ([]byte, error)
+}
+
+// The installer emits one env var per line; rewriting in place keeps the rest
+// of the compose byte-identical, which a yaml round-trip would break.
+func SetComposeEnvVars(content []byte, varName, newValue string) ([]byte, int, error) {
+	re := regexp.MustCompile(`(?m)^([ \t]*- ` + regexp.QuoteMeta(varName) + `=)[^\n]*`)
+	changed := 0
+	out := re.ReplaceAllStringFunc(string(content), func(m string) string {
+		if strings.HasSuffix(m, "="+newValue) {
+			return m
+		}
+		changed++
+		return m[:strings.Index(m, "=")+1] + newValue
+	})
+	return []byte(out), changed, nil
 }
