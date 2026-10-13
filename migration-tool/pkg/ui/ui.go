@@ -8,6 +8,10 @@ import (
 	"unicode/utf8"
 )
 
+// stdinReader is shared across all interactive prompts so that keystrokes
+// typed before a prompt is fully printed are not lost in a discarded buffer.
+var stdinReader = bufio.NewReader(os.Stdin)
+
 // Box width for headers and frames
 const boxWidth = 67
 
@@ -108,11 +112,14 @@ func Confirm(message string) bool {
 	fmt.Printf("%s %s ", BoldYellow(iconWarning), message)
 	fmt.Print(Bold("[y/N]: "))
 
-	reader := bufio.NewReader(os.Stdin)
-	response, _ := reader.ReadString('\n')
+	reader := stdinReader
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		return false
+	}
 	response = strings.TrimSpace(strings.ToLower(response))
-
-	return response == "y" || response == "yes"
+	// Operators are Spanish speakers; "si" is as common as "y" here.
+	return response == "y" || response == "yes" || response == "si" || response == "sí"
 }
 
 // ConfirmDangerous prompts for a dangerous operation requiring "Yes" (capital Y)
@@ -135,8 +142,11 @@ func ConfirmDangerous(message string) bool {
 	fmt.Println()
 	fmt.Print(Bold("Type 'Yes' to confirm (or anything else to cancel): "))
 
-	reader := bufio.NewReader(os.Stdin)
-	response, _ := reader.ReadString('\n')
+	reader := stdinReader
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		return false
+	}
 	response = strings.TrimSpace(response)
 
 	return response == "Yes"
