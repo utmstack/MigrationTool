@@ -73,8 +73,13 @@ Then run:
 
 ```bash
 sudo ./utmstack_migration_tool prepare-agents --config config.yaml
-sudo ./utmstack_migration_tool upgrade --config config.yaml
+sudo ./utmstack_migration_tool upgrade --config config.yaml            # config, users, integrations, agents
+sudo ./utmstack_migration_tool upgrade --config config.yaml --with-data  # + logs, alerts, statistics
 ```
+
+`--with-data` is optional. Without it the search data is **not** moved — in an
+upgrade OpenSearch is removed, so that data is lost. The flag streams the
+data into the new ClickHouse before the old stack comes down.
 
 Same idea as Mode A, but the tool reaches the V11 server over SSH.
 
@@ -112,7 +117,8 @@ Then run:
 
 ```bash
 sudo ./utmstack_migration_tool prepare-agents --config config.yaml
-sudo ./utmstack_migration_tool migrate --config config.yaml
+sudo ./utmstack_migration_tool migrate --config config.yaml            # config, users, integrations, agents
+sudo ./utmstack_migration_tool migrate --config config.yaml --with-data  # + logs, alerts, statistics
 ```
 
 The tool exports from V11, imports into the existing V12, and copies the
@@ -154,6 +160,7 @@ Both commands read the same `config.yaml` as the modes above: `export` uses
 | Integration configurations | Only the values you configured, written to V12 YAML files under the destination's `integrations_config_dir`. V12 ships the integration catalog itself. |
 | Agents and collectors | Re-registered on the destination so they keep working. |
 | Agent connection key | Copied over, so existing agents keep enrolling without re-provisioning. |
+| Search data (logs, alerts, statistics) | With `--with-data`, OpenSearch tenant data streams straight into the V12 ClickHouse — no intermediate file. Migrated rows are normalised to the V12 default tenant, since V11 had no multi-tenancy. |
 
 ## Not migrated
 
@@ -163,7 +170,6 @@ These are intentionally left behind — V12 provides or re-discovers them:
 - **Dashboards and visualizations** (V12 provisions them from its filesystem)
 - **Assets, data sources, and network-scan results** (re-discovered by V12 scans)
 - **Correlation rules and logstash filters** (V12 provisions them from its filesystem)
-- **Search data** (OpenSearch → ClickHouse import is deferred to a later phase and is not in this release)
 
 ---
 
