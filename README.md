@@ -159,6 +159,7 @@ Both commands read the same `config.yaml` as the modes above: `export` uses
 | Application configuration | Copied verbatim; the security key travels with it, so stored passwords stay decryptable. |
 | Integration configurations | Only the values you configured, written to V12 YAML files under the destination's `integrations_config_dir`. V12 ships the integration catalog itself. |
 | Agents and collectors | Re-registered on the destination so they keep working. |
+| Tag rules and incidents | Alert tags, tag rules (tag references are remapped to the new V12 tag IDs), and incidents with their linked alerts, history and notes. Incident statuses and severities are converted from the V11 codes to the V12 labels, and all rows are normalised to the V12 default tenant. |
 | Agent connection key | Copied over, so existing agents keep enrolling without re-provisioning. |
 | Internal encryption key | Written to the destination's `/root/utmstack.yml`, to the live `compose.yml` (`ENCRYPTION_KEY`/`INTERNAL_KEY` on each affected service), and to the events-engine pipeline YAML the plugins read. A `docker stack deploy` propagates the compose env, and the event-processor services are force-updated afterwards so they reload the key cached from the pipeline YAML — without that, the V12 plugin would keep using the old key and V11-encrypted credentials would not decrypt. No-op if the destination already carries the same key. |
 | Search data (logs, alerts, statistics) | With `--with-data`, OpenSearch tenant data streams straight into the V12 ClickHouse — no intermediate file. Migrated rows are normalised to the V12 default tenant, since V11 had no multi-tenancy. |
@@ -171,6 +172,7 @@ These are intentionally left behind — V12 provides or re-discovers them:
 - **Dashboards and visualizations** (V12 provisions them from its filesystem)
 - **Assets, data sources, and network-scan results** (re-discovered by V12 scans)
 - **Correlation rules and logstash filters** (V12 provisions them from its filesystem)
+- **Incident response / SOAR** (playbooks, actions, commands, jobs — V12 has no equivalent yet)
 
 ---
 
