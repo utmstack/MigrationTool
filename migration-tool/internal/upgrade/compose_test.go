@@ -3,9 +3,11 @@ package upgrade
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/domain"
+	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/searchdata"
 )
 
 type staticExecutor struct {
@@ -61,6 +63,125 @@ services:
 	}
 }
 
+func TestCaptureOSReadsImageAndPassword(t *testing.T) {
+	compose := `
+services:
+  node1:
+    image: ghcr.io/utmstack/utmstack/opensearch:latest
+    environment:
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=LSPNdRsZAyL#1+P!
+  postgres:
+    image: postgres:16
+`
+	u := &Upgrader{
+		sourceCfg: domain.InstanceConfig{SSHUser: "utmstack"},
+		executor:  &staticExecutor{readFile: func(string) ([]byte, error) { return []byte(compose), nil }},
+	}
+	image, pass, err := u.captureOS()
+	if err != nil {
+		t.Fatalf("captureOS: %v", err)
+	}
+	if image != "ghcr.io/utmstack/utmstack/opensearch:latest" {
+		t.Errorf("image = %q", image)
+	}
+	if pass != "LSPNdRsZAyL#1+P!" {
+		t.Errorf("pass = %q", pass)
+	}
+}
+
+func TestCaptureOSFallsBackToElasticVar(t *testing.T) {
+	compose := `
+services:
+  node1:
+    image: ghcr.io/utmstack/utmstack/opensearch:1.3.14
+    environment:
+      - ELASTICSEARCH_PASSWORD=espass
+`
+	u := &Upgrader{
+		sourceCfg: domain.InstanceConfig{SSHUser: "utmstack"},
+		executor:  &staticExecutor{readFile: func(string) ([]byte, error) { return []byte(compose), nil }},
+	}
+	_, pass, err := u.captureOS()
+	if err != nil {
+		t.Fatalf("captureOS: %v", err)
+	}
+	if pass != "espass" {
+		t.Errorf("pass = %q, want espass", pass)
+	}
+}
+
+func TestCaptureOSFailsWhenNode1Missing(t *testing.T) {
+	compose := `
+services:
+  postgres:
+    image: postgres:16
+`
+	u := &Upgrader{
+		sourceCfg: domain.InstanceConfig{SSHUser: "utmstack"},
+		executor:  &staticExecutor{readFile: func(string) ([]byte, error) { return []byte(compose), nil }},
+	}
+	if _, _, err := u.captureOS(); err == nil {
+		t.Fatal("expected error when node1 service missing")
+	}
+}
+
+func TestCaptureOSFailsWhenNoPasswordVar(t *testing.T) {
+	compose := `
+services:
+  node1:
+    image: ghcr.io/utmstack/utmstack/opensearch:latest
+    environment:
+      - cluster.name=utmstack
+`
+	u := &Upgrader{
+		sourceCfg: domain.InstanceConfig{SSHUser: "utmstack"},
+		executor:  &staticExecutor{readFile: func(string) ([]byte, error) { return []byte(compose), nil }},
+	}
+	if _, _, err := u.captureOS(); err == nil {
+		t.Fatal("expected error when no OpenSearch password var present")
+	}
+}
+
+func TestStreamPhantomDataTearsDownOnlyOnSuccess(t *testing.T) {
+	ex := &dockerExecutor{}
+	u := &Upgrader{
+		executor:   ex,
+		osImage:    "img",
+		osPassword: "pw",
+		streamFn:   func(a, p string) error { return nil },
+	}
+	if err := u.streamPhantomData(); err != nil {
+		t.Fatalf("streamPhantomData: %v", err)
+	}
+	teardownSeen := false
+	for _, c := range ex.commands {
+		if strings.Contains(c, "docker rm -f "+searchdata.PhantomName) {
+			teardownSeen = true
+		}
+	}
+	if !teardownSeen {
+		t.Fatalf("expected teardown after clean stream, commands: %v", ex.commands)
+	}
+}
+
+func TestStreamPhantomDataKeepsNodeOnStreamError(t *testing.T) {
+	ex := &dockerExecutor{}
+	u := &Upgrader{
+		executor:   ex,
+		osImage:    "img",
+		osPassword: "pw",
+		streamFn:   func(a, p string) error { return errors.New("stream boom") },
+	}
+	if err := u.streamPhantomData(); err == nil || err.Error() != "stream boom" {
+		t.Fatalf("err = %v, want stream boom", err)
+	}
+	for _, c := range ex.commands {
+		if strings.Contains(c, "docker rm -f ") {
+			t.Fatalf("phantom must stay up on stream error: %v", ex.commands)
+		}
+	}
+}
+
 func TestGetPostgresPasswordFromComposeMissingService(t *testing.T) {
 	compose := `
 services:
@@ -108,4 +229,27 @@ services:
 	if len(readPaths) < 2 {
 		t.Errorf("expected at least 2 paths tried, got %v", readPaths)
 	}
+}
+
+// dockerExecutor emulates the docker queries Phantom.Boot issues, so the
+// streamPhantomData orchestration can be tested without a real engine.
+type dockerExecutor struct {
+	staticExecutor
+	commands []string
+}
+
+func (d *dockerExecutor) ExecuteCommandWithSudo(cmd string) (string, error) {
+	d.commands = append(d.commands, cmd)
+	switch {
+	case strings.Contains(cmd, "docker ps -a -q"):
+		// No existing container: force the pull+run path.
+		return "", nil
+	case strings.Contains(cmd, "docker ps -q"):
+		return "", nil
+	case strings.Contains(cmd, "docker image inspect"):
+		return "{}", nil
+	case strings.HasPrefix(cmd, "docker run "):
+		return "cid", nil
+	}
+	return "", nil
 }

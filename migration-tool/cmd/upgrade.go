@@ -50,7 +50,7 @@ func init() {
 	upgradeCmd.Flags().BoolVar(&upgradeSkipAgentCheck, "skip-agent-check", false,
 		"Skip the prepare-agents state DB check (use only if you know what you are doing)")
 	upgradeCmd.Flags().BoolVar(&upgradeWithData, "with-data", false,
-		"Also migrate V11 OpenSearch tenant data into V12 ClickHouse (dumped before cleanup, loaded after import)")
+		"Also migrate V11 OpenSearch tenant data into V12 ClickHouse (streamed from a temporary OpenSearch container booted after install)")
 }
 
 // ensureAgentsPrepared verifies that the operator has run `prepare-agents` before

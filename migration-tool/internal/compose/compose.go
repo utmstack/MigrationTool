@@ -16,6 +16,7 @@ type ComposeFile struct {
 }
 
 type Service struct {
+	Image       string   `yaml:"image"`
 	Environment []string `yaml:"environment"`
 }
 
@@ -23,6 +24,9 @@ type Service struct {
 // UTMStack installer ("postgres" in both V11 and V12). The Docker Swarm
 // service name is prefixed with the stack: utmstack_postgres.
 const PostgresYAMLServiceName = "postgres"
+
+// OpenSearchYAMLServiceName is the V11 OpenSearch node service key.
+const OpenSearchYAMLServiceName = "node1"
 
 // composeYMLPaths returns the candidate locations of the live compose.yml,
 // ordered by likelihood. After an updater self-copy the live one can sit
@@ -71,6 +75,23 @@ func FindComposeEnvVar(content []byte, serviceKey, varName string) (string, erro
 		}
 	}
 	return "", fmt.Errorf("%s not found in service %q", varName, serviceKey)
+}
+
+// FindComposeServiceImage returns the image configured for serviceKey in the
+// given compose file.
+func FindComposeServiceImage(content []byte, serviceKey string) (string, error) {
+	var compose ComposeFile
+	if err := yaml.Unmarshal(content, &compose); err != nil {
+		return "", fmt.Errorf("failed to parse compose.yml: %w", err)
+	}
+	svc, ok := compose.Services[serviceKey]
+	if !ok {
+		return "", fmt.Errorf("service %q not found in compose.yml", serviceKey)
+	}
+	if svc.Image == "" {
+		return "", fmt.Errorf("image not found in service %q", serviceKey)
+	}
+	return svc.Image, nil
 }
 
 // ReadFileExecutor is the subset of remote.CommandExecutor used to pull
