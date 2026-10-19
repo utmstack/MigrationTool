@@ -2,10 +2,12 @@ package compose
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/config"
+	"github.com/utmstack/UTMStackEnterprise/migration-tool/pkg/ui"
 	"gopkg.in/yaml.v3"
 )
 
@@ -91,4 +93,81 @@ func SetComposeEnvVars(content []byte, varName, newValue string) ([]byte, int, e
 		return m[:strings.Index(m, "=")+1] + newValue
 	})
 	return []byte(out), changed, nil
+}
+
+const pipelineDir = "/utmstack/events-engine-workdir/pipeline"
+
+// pluginKeyLines are the scalar fields the V12 installer bakes with the
+// instance key into the pipeline YAML.
+var pluginKeyLines = []string{"internalKey", "encryptionKey"}
+
+// pipelineExecutor is the minimal surface SyncPipeline needs, so the pipeline
+// helpers work with both SSH and local executors and with test fakes.
+type pipelineExecutor interface {
+	ExecuteCommandWithSudo(command string) (string, error)
+	WriteFile(path string, content []byte, perm os.FileMode) error
+}
+
+// SyncPipeline rewrites the key scalars in every yaml of the destination
+// pipeline dir. The plugin SDK reads those files for its config, so the
+// migrated ciphertext is only decryptable once they carry the synced key.
+// Reads go through sudo (files are root-owned); a missing or empty dir is a
+// warning, not an error. Returns whether any file changed.
+func SyncPipeline(exec pipelineExecutor, internalKey string) (bool, error) {
+	out, err := exec.ExecuteCommandWithSudo("ls " + pipelineDir + " 2>/dev/null || true")
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(out) == "" {
+		ui.Warning("Pipeline directory not found — skipping plugin config key sync")
+		return false, nil
+	}
+	anyChanged := false
+	for _, name := range strings.Fields(out) {
+		if !strings.HasSuffix(name, ".yaml") {
+			continue
+		}
+		path := pipelineDir + "/" + name
+		content, err := exec.ExecuteCommandWithSudo("cat " + path)
+		if err != nil {
+			ui.Warning("Cannot read " + path + ": " + err.Error())
+			continue
+		}
+		updated := []byte(content)
+		changed := 0
+		for _, k := range pluginKeyLines {
+			u, n := ReplaceKeyLines(updated, k, internalKey)
+			updated = u
+			changed += n
+		}
+		if changed == 0 {
+			continue
+		}
+		if err := exec.WriteFile(path, updated, 0600); err != nil {
+			return anyChanged, fmt.Errorf("writing %s: %w", path, err)
+		}
+		anyChanged = true
+		ui.Info("Updated plugin config keys in " + name)
+	}
+	return anyChanged, nil
+}
+
+// ReplaceKeyLines rewrites every "keyName: <value>" line to carry newValue,
+// preserving the line's original indentation.
+func ReplaceKeyLines(content []byte, keyName, newValue string) ([]byte, int) {
+	lines := strings.Split(string(content), "\n")
+	changed := 0
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, keyName+":") {
+			continue
+		}
+		if trimmed == keyName+": "+newValue {
+			continue
+		}
+		ind := strings.Index(line, keyName+":")
+		lines[i] = line[:ind] + keyName + ": " + newValue
+		changed++
+	}
+	return []byte(strings.Join(lines, "\n")), changed
 }

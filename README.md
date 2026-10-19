@@ -160,6 +160,7 @@ Both commands read the same `config.yaml` as the modes above: `export` uses
 | Integration configurations | Only the values you configured, written to V12 YAML files under the destination's `integrations_config_dir`. V12 ships the integration catalog itself. |
 | Agents and collectors | Re-registered on the destination so they keep working. |
 | Agent connection key | Copied over, so existing agents keep enrolling without re-provisioning. |
+| Internal encryption key | Written to the destination's `/root/utmstack.yml`, to the live `compose.yml` (`ENCRYPTION_KEY`/`INTERNAL_KEY` on each affected service), and to the events-engine pipeline YAML the plugins read. A `docker stack deploy` propagates the compose env, and the event-processor services are force-updated afterwards so they reload the key cached from the pipeline YAML — without that, the V12 plugin would keep using the old key and V11-encrypted credentials would not decrypt. No-op if the destination already carries the same key. |
 | Search data (logs, alerts, statistics) | With `--with-data`, OpenSearch tenant data streams straight into the V12 ClickHouse — no intermediate file. Migrated rows are normalised to the V12 default tenant, since V11 had no multi-tenancy. |
 
 ## Not migrated

@@ -7,11 +7,14 @@ import (
 )
 
 type fakeExec struct {
-	inspectOut string
-	lsOut      string
-	deploy     string
-	files      map[string][]byte
-	writes     map[string][]byte
+	inspectOut   string
+	lsOut        string
+	deploy       string
+	updates      []string
+	pipelineLS   string
+	pipelineFile string
+	files        map[string][]byte
+	writes       map[string][]byte
 }
 
 func (f *fakeExec) Close() error { return nil }
@@ -32,14 +35,26 @@ func (f *fakeExec) WriteFile(path string, content []byte, _ os.FileMode) error {
 func (f *fakeExec) ExecuteCommand(_ string) (string, error) { return "", nil }
 
 func (f *fakeExec) ExecuteCommandWithSudo(command string) (string, error) {
-	if strings.Contains(command, "docker service inspect") {
+	switch {
+	case strings.Contains(command, "ls /utmstack/events-engine-workdir/pipeline"):
+		return f.pipelineLS, nil
+	case strings.Contains(command, "cat /utmstack/events-engine-workdir/pipeline/"):
+		return f.pipelineFile, nil
+	case strings.Contains(command, "docker service ls --quiet --filter \"name=utmstack_event-processor\""):
+		return "<service-id>\n", nil
+	case strings.Contains(command, "--format '{{.Spec.Name}}'"):
+		return "utmstack_event-processor-worker\n", nil
+	case strings.Contains(command, "--format '{{.Spec.TaskTemplate.ContainerSpec.Env}}'"):
+		return "[\"WORK_DIR=/workdir\",\"MODE=worker\"]\n", nil
+	case strings.Contains(command, "docker service update --force"):
+		f.updates = append(f.updates, command)
+		return "", nil
+	case strings.Contains(command, "docker service inspect"):
 		return f.inspectOut, nil
-	}
-	if strings.Contains(command, "docker stack deploy") {
+	case strings.Contains(command, "docker stack deploy"):
 		f.deploy = command
 		return "", nil
-	}
-	if strings.Contains(command, "docker service ls") {
+	case strings.Contains(command, "docker service ls"):
 		return f.lsOut, nil
 	}
 	return "", nil
@@ -97,6 +112,45 @@ func TestSyncDeploysWithRunningTagNotDigest(t *testing.T) {
 	ymlOut := string(f.writes["/root/utmstack.yml"])
 	if !strings.Contains(ymlOut, "internal_key: newkey") {
 		t.Errorf("utmstack.yml must carry the new key, got: %s", ymlOut)
+	}
+	// fake pipeline dir is empty, so the worker is not force-updated.
+	if len(f.updates) != 0 {
+		t.Errorf("expected no force update with an empty pipeline, got: %v", f.updates)
+	}
+}
+
+func TestSyncPipelineOnlyChangeForceUpdatesWorker(t *testing.T) {
+	// compose already holds the key: only the pipeline changed. The deploy is
+	// then a no-op for the worker spec, so the worker must be force-updated to
+	// reload the key it cached at startup.
+	f := newFake("ghcr.io/utmstack/utmstack/frontend:v12.0.0-abc\n")
+	f.files["/home/utmstack/compose.yml"] = []byte(strings.ReplaceAll(oldCompose, "oldkey", "newkey"))
+	f.pipelineLS = "utmstack_plugins.yaml\n"
+	f.pipelineFile = "        internalKey: oldkey\n        encryptionKey: oldkey\n"
+	if err := Sync(f, "utmstack", "newkey"); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if f.deploy == "" {
+		t.Fatalf("deploy must run when the pipeline changed")
+	}
+	if len(f.updates) != 1 || !strings.Contains(f.updates[0], "utmstack_event-processor-worker") {
+		t.Fatalf("expected a force update of the worker, got: %v", f.updates)
+	}
+}
+
+func TestSyncAllInSyncIsNoOp(t *testing.T) {
+	f := newFake("ghcr.io/utmstack/utmstack/frontend:v12.0.0-abc\n")
+	f.files["/home/utmstack/compose.yml"] = []byte(strings.ReplaceAll(oldCompose, "oldkey", "newkey"))
+	f.pipelineLS = "utmstack_plugins.yaml\n"
+	f.pipelineFile = "        internalKey: newkey\n        encryptionKey: newkey\n"
+	if err := Sync(f, "utmstack", "newkey"); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if f.deploy != "" {
+		t.Errorf("expected no deploy when everything is in sync, got: %q", f.deploy)
+	}
+	if len(f.updates) != 0 {
+		t.Errorf("expected no force update when everything is in sync, got: %v", f.updates)
 	}
 }
 

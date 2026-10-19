@@ -1,7 +1,8 @@
 // Package keysync propagates a V11 internal key to a destination V12
-// instance: it updates /root/utmstack.yml and the live compose env
-// (ENCRYPTION_KEY/INTERNAL_KEY), then redeploys the stack only if the compose
-// changed, so source-encrypted credentials decrypt correctly there.
+// instance: it updates /root/utmstack.yml, the plugin pipeline YAML,
+// and the live compose env (ENCRYPTION_KEY/INTERNAL_KEY), then redeploys
+// the stack if any of them changed, so source-encrypted credentials
+// decrypt correctly there.
 package keysync
 
 import (
@@ -43,6 +44,13 @@ func Sync(exec remote.CommandExecutor, sshUser, internalKey string) error {
 		return fmt.Errorf("writing %s: %w", config.UTMStackYMLPath, err)
 	}
 
+	// The plugin SDK reads the key from the pipeline YAML, not the compose env;
+	// it must carry it before the redeploy restarts the services.
+	pipelineChanged, err := compose.SyncPipeline(exec, internalKey)
+	if err != nil {
+		return err
+	}
+
 	composeContent, err := compose.ReadComposeBytes(exec, sshUser)
 	if err != nil {
 		return err
@@ -57,14 +65,21 @@ func Sync(exec remote.CommandExecutor, sshUser, internalKey string) error {
 		}
 		changed += n
 	}
-	if changed == 0 {
+	if changed == 0 && !pipelineChanged {
 		ui.Success("Security credentials already in sync")
 		return nil
 	}
-	if err := exec.WriteFile(composePath, composeContent, 0644); err != nil {
-		return fmt.Errorf("writing %s: %w", composePath, err)
+	if changed > 0 {
+		if err := exec.WriteFile(composePath, composeContent, 0644); err != nil {
+			return fmt.Errorf("writing %s: %w", composePath, err)
+		}
 	}
 
+	// The plugin caches its key in memory at startup, so a pipeline change
+	// needs a restart to take effect. A compose change alone is enough because
+	// docker stack deploy recreates the services with the new env. But a
+	// pipeline-only change does not alter the service spec, so the deploy is a
+	// no-op for the worker and we must force-update it explicitly.
 	ui.Info("Propagating internal key to running services (stack redeploy, brief downtime)")
 	tag, err := currentStackTag(exec)
 	if err != nil {
@@ -76,6 +91,11 @@ func Sync(exec remote.CommandExecutor, sshUser, internalKey string) error {
 	}
 	if err := waitStackConvergence(exec); err != nil {
 		return err
+	}
+	if pipelineChanged {
+		if err := forceUpdatePipelineServices(exec); err != nil {
+			return fmt.Errorf("restarting event processors: %w", err)
+		}
 	}
 	ui.Success("Security credentials synchronized")
 	return nil
@@ -100,6 +120,35 @@ func currentStackTag(exec remote.CommandExecutor) (string, error) {
 		return "", fmt.Errorf("no tag in image %q", tag)
 	}
 	return tag[i+1:], nil
+}
+
+// forceUpdatePipelineServices restarts every event processor that reads the
+// pipeline YAML. docker stack deploy only recreates a service when its spec
+// changes, and a pipeline-only key fix changes no spec, so the worker would
+// keep the key it cached at startup without this.
+func forceUpdatePipelineServices(exec remote.CommandExecutor) error {
+	services, err := exec.ExecuteCommandWithSudo(`docker service ls --quiet --filter "name=utmstack_event-processor"`)
+	if err != nil {
+		return err
+	}
+	for _, id := range strings.Fields(services) {
+		name, err := exec.ExecuteCommandWithSudo(`docker service inspect ` + id + ` --format '{{.Spec.Name}}'`)
+		if err != nil {
+			return err
+		}
+		env, err := exec.ExecuteCommandWithSudo(`docker service inspect ` + id + ` --format '{{.Spec.TaskTemplate.ContainerSpec.Env}}'`)
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(env, "WORK_DIR=/workdir") {
+			continue
+		}
+		ui.Info("Restarting " + name + " to reload the plugin key")
+		if _, err := exec.ExecuteCommandWithSudo(`docker service update --force ` + name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func waitStackConvergence(exec remote.CommandExecutor) error {
