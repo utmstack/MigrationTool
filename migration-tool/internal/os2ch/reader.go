@@ -145,6 +145,74 @@ func (c *OSClient) CountDocs(ctx context.Context, index string) (int64, error) {
 	return resp.Count, nil
 }
 
+// Config returns the original connection settings of this client, so callers
+// can build other endpoints against the same host/credentials.
+func (c *OSClient) Config() OSConfig {
+	host := c.base
+	for _, p := range []string{"https://", "http://"} {
+		host = strings.TrimPrefix(host, p)
+	}
+	return OSConfig{Host: host, User: c.user, Password: c.pass}
+}
+
+// ClusterStatus returns shard counts from GET /_cluster/health.
+type ClusterStatus struct {
+	Initializing int `json:"initializing_shards"`
+	ActivePrimary int `json:"active_primary_shards"`
+}
+
+func (c *OSClient) Status(ctx context.Context) (ClusterStatus, error) {
+	var resp ClusterStatus
+	if err := c.do(ctx, http.MethodGet, "/_cluster/health", nil, &resp); err != nil {
+		return ClusterStatus{}, err
+	}
+	return resp, nil
+}
+
+// InScopeSearchable reports whether a search over the v11-* tenant indices
+// is served (200). 404 means the indices are not (yet) discovered; 5xx means
+// the cluster is up but shards are not serving searches.
+func (c *OSClient) InScopeSearchable(ctx context.Context) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/v11-*/_search?size=0", nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(c.user, c.pass)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		return false, fmt.Errorf("OS probe /v11-*/_search: %s: %s", resp.Status, truncate(body, 200))
+	}
+}
+
+// Ready reports whether the tenant indices are safe to read: no shard is still
+// initializing and, when any primary exists, a probe search is served. A fresh
+// boot reports zero shards before the volume is discovered, so this is the only
+// reliable stop-waiting signal. An empty cluster (no primaries) is ready.
+func (c *OSClient) Ready(ctx context.Context) (bool, error) {
+	st, err := c.Status(ctx)
+	if err != nil {
+		return false, err
+	}
+	if st.Initializing > 0 {
+		return false, nil
+	}
+	if st.ActivePrimary == 0 {
+		return true, nil
+	}
+	return c.InScopeSearchable(ctx)
+}
+
 func (c *OSClient) do(ctx context.Context, method, path string, body []byte, out interface{}) error {
 	var reader io.Reader
 	if body != nil {
