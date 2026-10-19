@@ -18,6 +18,12 @@ func GetDefaultMigrationTables() []DatabaseSource {
 				"utm_module_group",
 				"utm_module_group_configuration",
 				"utm_federation_service_client",
+				"utm_alert_tag",
+				"utm_alert_tag_rule",
+				"utm_incident",
+				"utm_incident_alert",
+				"utm_incident_history",
+				"utm_incident_note",
 			},
 		},
 		{
