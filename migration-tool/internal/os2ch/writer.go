@@ -1,8 +1,6 @@
 package os2ch
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -16,11 +14,9 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// CHWriter inserts mapped rows into a ClickHouse table. Native inserts go
-// over 9000; streaming (InsertFormat) and the count/connectivity checks go
-// over HTTP 8123.
+// CHWriter inserts mapped rows into a ClickHouse table over HTTP 8123:
+// streaming uses InsertFormat, the count/connectivity checks use REST.
 type CHWriter struct {
-	native     driver.Conn
 	http       driver.Conn
 	httpClient *http.Client
 	base       string
@@ -30,20 +26,18 @@ type CHWriter struct {
 	log        *slog.Logger
 }
 
-// CHClient is the ClickHouse surface the engine depends on: write (stream or
-// file) and read counts for verification. *CHWriter implements it; tests
-// inject a fake.
+// CHClient is the ClickHouse surface the engine depends on: streaming inserts
+// and read counts for verification. *CHWriter implements it; tests inject a
+// fake.
 type CHClient interface {
 	InsertTable(ctx context.Context, table string, r io.Reader) error
-	InsertFile(ctx context.Context, ds Dataset, r io.Reader) error
 	CountRows(ctx context.Context, ds Dataset) (int64, error)
 	SamplePresent(ctx context.Context, ds Dataset, id string) (bool, error)
 	Close() error
 }
 
 type CHConfig struct {
-	Addr     string // host:9000 native
-	HTTPAddr string // host:8123 HTTP (optional; derived from Addr if empty)
+	HTTPAddr string // host:8123
 	User     string
 	Password string
 	Database string // utmstack
@@ -56,36 +50,10 @@ func NewCHWriter(ctx context.Context, cfg CHConfig, logger *slog.Logger) (*CHWri
 	if cfg.User == "" {
 		cfg.User = "default"
 	}
-	if cfg.Addr == "" && cfg.HTTPAddr == "" {
-		return nil, fmt.Errorf("CHConfig needs Addr (native) or HTTPAddr")
-	}
-	var conn driver.Conn
-	if cfg.Addr != "" {
-		// Bulk inserts of large NDJSON files can take minutes on small VMs while
-		// ClickHouse merges, so the read timeout must comfortably exceed the
-		// default 53s.
-		var err error
-		conn, err = clickhouse.Open(&clickhouse.Options{
-			Addr: []string{cfg.Addr},
-			Auth: clickhouse.Auth{
-				Database: cfg.Database,
-				Username: cfg.User,
-				Password: cfg.Password,
-			},
-			ReadTimeout: 30 * time.Minute,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("open clickhouse native: %w", err)
-		}
-		if err := conn.Ping(ctx); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("ping clickhouse: %w", err)
-		}
+	if cfg.HTTPAddr == "" {
+		return nil, fmt.Errorf("CHConfig needs HTTPAddr")
 	}
 	base := cfg.HTTPAddr
-	if base == "" {
-		base = "http://" + strings.SplitN(cfg.Addr, ":", 2)[0] + ":8123"
-	}
 	// httpQuery builds raw REST URLs, which need the scheme; the driver adds
 	// it itself, so normalize here.
 	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
@@ -103,16 +71,13 @@ func NewCHWriter(ctx context.Context, cfg CHConfig, logger *slog.Logger) (*CHWri
 		ReadTimeout: 90 * time.Minute,
 	})
 	if err != nil {
-		conn.Close()
 		return nil, fmt.Errorf("open clickhouse http: %w", err)
 	}
 	if err := httpConn.Ping(ctx); err != nil {
-		conn.Close()
 		httpConn.Close()
 		return nil, fmt.Errorf("ping clickhouse http: %w", err)
 	}
 	return &CHWriter{
-		native:     conn,
 		http:       httpConn,
 		httpClient: &http.Client{Timeout: 60 * time.Second},
 		base:       strings.TrimSuffix(base, "/"),
@@ -124,16 +89,10 @@ func NewCHWriter(ctx context.Context, cfg CHConfig, logger *slog.Logger) (*CHWri
 }
 
 func (w *CHWriter) Close() error {
-	var first error
-	if w.native != nil {
-		first = w.native.Close()
+	if w.http == nil {
+		return nil
 	}
-	if w.http != nil {
-		if err := w.http.Close(); err != nil && first == nil {
-			first = err
-		}
-	}
-	return first
+	return w.http.Close()
 }
 
 // TableFor maps a dataset to its ClickHouse table name.
@@ -148,57 +107,6 @@ func TableFor(ds Dataset) string {
 	default:
 		return ""
 	}
-}
-
-// insertChunkBytes caps how many raw bytes are buffered into one AsyncInsert
-// so a single large NDJSON file never holds an unbounded in-memory string.
-const insertChunkBytes = 64 * 1024 * 1024
-
-// InsertFile loads one NDJSON reader into the dataset's table in large
-// chunks, issuing one awaited AsyncInsert per chunk. A native-protocol Exec
-// does not accept an io.Reader, so the rows are embedded in the query text,
-// matching the proven V12 os2ch reference.
-func (w *CHWriter) InsertFile(ctx context.Context, ds Dataset, r io.Reader) error {
-	table := TableFor(ds)
-	if table == "" {
-		return fmt.Errorf("unknown dataset %q", ds)
-	}
-
-	var (
-		scanner = bufio.NewScanner(r)
-		chunk   bytes.Buffer
-	)
-	scanner.Buffer(make([]byte, 1024*1024), 64*1024*1024)
-	for scanner.Scan() {
-		if chunk.Len() > 0 {
-			chunk.WriteByte('\n')
-		}
-		chunk.Write(scanner.Bytes())
-		if chunk.Len() >= insertChunkBytes {
-			if err := w.insertChunk(ctx, table, &chunk); err != nil {
-				return err
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read ndjson for %s: %w", table, err)
-	}
-	if chunk.Len() > 0 {
-		if err := w.insertChunk(ctx, table, &chunk); err != nil {
-			return err
-		}
-	}
-	w.log.Debug("bulk insert", "table", table)
-	return nil
-}
-
-func (w *CHWriter) insertChunk(ctx context.Context, table string, chunk *bytes.Buffer) error {
-	query := fmt.Sprintf("INSERT INTO %s FORMAT JSONEachRow\n%s", table, chunk.String())
-	if err := w.native.AsyncInsert(ctx, query, true); err != nil {
-		return fmt.Errorf("bulk insert into %s: %w", table, err)
-	}
-	chunk.Reset()
-	return nil
 }
 
 // InsertTable streams one JSONEachRow reader into the named table as a

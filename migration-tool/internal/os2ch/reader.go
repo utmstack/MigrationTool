@@ -112,39 +112,6 @@ func (c *OSClient) Scroll(ctx context.Context, index string, pageSize int, onPag
 	return total, nil
 }
 
-// SampleFirst reads up to pageSize documents from the start of an index with
-// a single search request (no scroll session). It is used for size
-// estimation: one round-trip per index, no cleanup.
-func (c *OSClient) SampleFirst(ctx context.Context, index string, pageSize int, onPage func(id string, doc map[string]interface{}) error) (int, error) {
-	if pageSize <= 0 {
-		pageSize = 1000
-	}
-	body, _ := json.Marshal(map[string]interface{}{"size": pageSize})
-	var r osSearchResponse
-	if err := c.do(ctx, http.MethodPost, "/"+url.PathEscape(index)+"/_search", body, &r); err != nil {
-		return 0, err
-	}
-	total := 0
-	for _, h := range r.Hits.Hits {
-		if err := onPage(h.ID, h.Source); err != nil {
-			return total, err
-		}
-		total++
-	}
-	return total, nil
-}
-
-// CountDocs returns the document count for a single index.
-func (c *OSClient) CountDocs(ctx context.Context, index string) (int64, error) {
-	var resp struct {
-		Count int64 `json:"count"`
-	}
-	if err := c.do(ctx, http.MethodGet, "/"+url.PathEscape(index)+"/_count", nil, &resp); err != nil {
-		return 0, err
-	}
-	return resp.Count, nil
-}
-
 // Config returns the original connection settings of this client, so callers
 // can build other endpoints against the same host/credentials.
 func (c *OSClient) Config() OSConfig {
@@ -157,7 +124,7 @@ func (c *OSClient) Config() OSConfig {
 
 // ClusterStatus returns shard counts from GET /_cluster/health.
 type ClusterStatus struct {
-	Initializing int `json:"initializing_shards"`
+	Initializing  int `json:"initializing_shards"`
 	ActivePrimary int `json:"active_primary_shards"`
 }
 

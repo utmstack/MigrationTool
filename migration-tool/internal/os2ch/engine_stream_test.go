@@ -48,11 +48,6 @@ func (f *fakeCH) InsertTable(ctx context.Context, table string, r io.Reader) err
 	return sc.Err()
 }
 
-func (f *fakeCH) InsertFile(ctx context.Context, ds Dataset, r io.Reader) error {
-	io.Copy(io.Discard, r)
-	return nil
-}
-
 func (f *fakeCH) CountRows(context.Context, Dataset) (int64, error) { return 0, nil }
 
 func (f *fakeCH) SamplePresent(context.Context, Dataset, string) (bool, error) { return false, nil }

@@ -3,7 +3,6 @@ package os2ch
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -85,49 +84,6 @@ func TestScrollPages(t *testing.T) {
 	}
 }
 
-func TestSampleFirstSinglePage(t *testing.T) {
-	srv := fakeOS(t)
-	defer srv.Close()
-	c := NewOSClient(OSConfig{Host: srv.URL})
-	var ids []string
-	n, err := c.SampleFirst(context.Background(), "v11-log-linux-2026-10-11", 10, func(id string, doc map[string]interface{}) error {
-		ids = append(ids, id)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("SampleFirst: %v", err)
-	}
-	// page1 has 2 docs, smaller than the requested size: no scroll continues.
-	if n != 2 || len(ids) != 2 {
-		t.Fatalf("read %d docs %v, want 2", n, ids)
-	}
-}
-
-func TestEstimateExtrapolatesFromSample(t *testing.T) {
-	srv := fakeOS(t)
-	defer srv.Close()
-	e := &Engine{
-		os:    NewOSClient(OSConfig{Host: srv.URL}),
-		log:   slog.New(slog.DiscardHandler),
-		batch: 2,
-	}
-	est, err := e.Estimate(context.Background())
-	if err != nil {
-		t.Fatalf("Estimate: %v", err)
-	}
-	// fakeOS reports 3 docs total for the log index; sample page is 2 docs,
-	// so the extrapolation must land at the full count.
-	if est.PerDataset[DatasetLogs] != 3 {
-		t.Fatalf("logs estimate = %d, want 3", est.PerDataset[DatasetLogs])
-	}
-	if est.TotalDocs != 3 {
-		t.Fatalf("total estimate = %d, want 3", est.TotalDocs)
-	}
-	if len(est.Errs) != 0 {
-		t.Fatalf("unexpected estimate errors: %v", est.Errs)
-	}
-}
-
 func TestListIndices(t *testing.T) {
 	srv := fakeOS(t)
 	defer srv.Close()
@@ -138,18 +94,5 @@ func TestListIndices(t *testing.T) {
 	}
 	if len(idx) != 2 || idx[0] != "v11-backend-logs" || idx[1] != "v11-log-linux-2026-10-11" {
 		t.Fatalf("indices = %v", idx)
-	}
-}
-
-func TestCountDocs(t *testing.T) {
-	srv := fakeOS(t)
-	defer srv.Close()
-	c := NewOSClient(OSConfig{Host: srv.URL})
-	n, err := c.CountDocs(context.Background(), "v11-log-linux-2026-10-11")
-	if err != nil {
-		t.Fatalf("CountDocs: %v", err)
-	}
-	if n != 3 {
-		t.Fatalf("count = %d, want 3", n)
 	}
 }
