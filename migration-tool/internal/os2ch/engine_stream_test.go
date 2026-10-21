@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -42,10 +43,16 @@ func (f *fakeCH) InsertTable(ctx context.Context, table string, r io.Reader) err
 	f.tables[table]++
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
+	var tmp []string
 	for sc.Scan() {
-		f.lines[table] = append(f.lines[table], sc.Text())
+		tmp = append(tmp, sc.Text())
 	}
-	return sc.Err()
+	if err := sc.Err(); err != nil {
+		// Atomic insert: a failed stream commits no rows (matches ClickHouse).
+		return err
+	}
+	f.lines[table] = append(f.lines[table], tmp...)
+	return nil
 }
 
 func (f *fakeCH) CountRows(context.Context, Dataset) (int64, error) { return 0, nil }
@@ -170,6 +177,87 @@ func TestStreamAllResumable(t *testing.T) {
 		t.Fatalf("manifest incomplete after run: %+v", s.Done)
 	}
 }
+
+// TestStreamAllRetriesIndexOnScrollContextLoss proves that when an index's
+// scroll context expires mid-stream (OpenSearch 404 search_context_missing),
+// the index is re-streamed from the start and the run still succeeds without
+// duplicating rows (the atomic insert commits nothing on the failed attempt).
+func TestStreamAllRetriesIndexOnScrollContextLoss(t *testing.T) {
+	var initSearches, scrollCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/_cat/indices" && r.URL.Query().Get("format") == "json":
+			_ = json.NewEncoder(w).Encode([]interface{}{
+				map[string]interface{}{"index": "v11-log-retry-2026-10-01"},
+			})
+		case r.URL.Path == "/v11-log-retry-2026-10-01/_search":
+			initSearches++
+			hits := []map[string]interface{}{}
+			if initSearches == 1 {
+				// Fill the page (batch=2) so the reader continues to the
+				// scroll continuation, where the failure happens.
+				hits = []map[string]interface{}{
+					{"_id": "1", "_source": map[string]interface{}{"id": "1", "dataType": "linux"}},
+					{"_id": "2", "_source": map[string]interface{}{"id": "2", "dataType": "linux"}},
+				}
+			} else {
+				hits = []map[string]interface{}{
+					{"_id": "1", "_source": map[string]interface{}{"id": "1", "dataType": "linux"}},
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"_scroll_id": "s-" + itoa(initSearches),
+				"hits":       map[string]interface{}{"hits": hits},
+			})
+		case r.URL.Path == "/_search/scroll":
+			scrollCalls++
+			body, _ := io.ReadAll(r.Body)
+			var req struct {
+				ScrollID string `json:"scroll_id"`
+			}
+			_ = json.Unmarshal(body, &req)
+			if req.ScrollID == "s-1" {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"type":       "search_phase_execution_exception",
+						"reason":     "all shards failed",
+						"root_cause": []interface{}{map[string]interface{}{"type": "search_context_missing_exception"}},
+					},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"hits": map[string]interface{}{"hits": []interface{}{}}})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	fc := newFakeCH()
+	e := &Engine{os: NewOSClient(OSConfig{Host: srv.URL}), ch: fc, batch: 2, log: slog.New(slog.DiscardHandler)}
+	res, err := e.StreamAll(context.Background(), "")
+	if err != nil {
+		t.Fatalf("StreamAll: %v", err)
+	}
+	if res.Total != 1 {
+		t.Fatalf("total = %d, want 1", res.Total)
+	}
+	if initSearches < 2 {
+		t.Fatalf("index restarted %d times, want at least 2", initSearches)
+	}
+	if scrollCalls < 1 {
+		t.Fatalf("scroll continuation %d times, want the failed context to have been requested", scrollCalls)
+	}
+	if fc.tables["utmstack.logs"] != 2 {
+		t.Fatalf("insert attempts = %d, want 2 (failed + ok)", fc.tables["utmstack.logs"])
+	}
+	if len(fc.lines["utmstack.logs"]) != 1 {
+		t.Fatalf("committed lines = %d, want 1 (no duplication)", len(fc.lines["utmstack.logs"]))
+	}
+}
+
+func itoa(n int) string { return fmt.Sprintf("%d", n) }
 
 // TestStreamAllSurfacesInsertFailure proves a failed ClickHouse insert aborts
 // StreamAll with an error rather than dropping the index silently.

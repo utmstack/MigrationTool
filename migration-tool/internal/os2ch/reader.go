@@ -14,14 +14,24 @@ import (
 	"time"
 )
 
+// retryableReads and retryBackoff bound the tolerance for transient OpenSearch
+// 5xx responses (shards still warming up after a fresh boot). OS reads are
+// idempotent, so retrying them changes nothing but lets the stream survive the
+// warm-up window that the single cluster-level readiness probe cannot cover.
+const (
+	retryableReads      = 6
+	defaultRetryBackoff = 5 * time.Second
+)
+
 // OSClient talks to an OpenSearch REST endpoint. It lists indices and scrolls
 // one index at a time, feeding each document to a callback. It trusts
 // self-signed certificates (in-cluster TLS) and uses basic auth.
 type OSClient struct {
-	base   string
-	user   string
-	pass   string
-	client *http.Client
+	base       string
+	user       string
+	pass       string
+	client     *http.Client
+	retryAfter time.Duration
 }
 
 type OSConfig struct {
@@ -45,6 +55,7 @@ func NewOSClient(cfg OSConfig) *OSClient {
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 			},
 		},
+		retryAfter: defaultRetryBackoff,
 	}
 }
 
@@ -89,10 +100,10 @@ func (c *OSClient) Scroll(ctx context.Context, index string, pageSize int, onPag
 			body []byte
 		)
 		if scrollID == "" {
-			path = "/" + url.PathEscape(index) + "/_search?scroll=2m"
+			path = "/" + url.PathEscape(index) + "/_search?scroll=5m"
 			body, _ = json.Marshal(map[string]interface{}{"size": pageSize})
 		} else {
-			path = "/_search/scroll?scroll=2m"
+			path = "/_search/scroll?scroll=5m"
 			body, _ = json.Marshal(map[string]interface{}{"scroll_id": scrollID})
 		}
 		if err := c.do(ctx, http.MethodPost, path, body, &r); err != nil {
@@ -181,34 +192,44 @@ func (c *OSClient) Ready(ctx context.Context) (bool, error) {
 }
 
 func (c *OSClient) do(ctx context.Context, method, path string, body []byte, out interface{}) error {
-	var reader io.Reader
-	if body != nil {
-		reader = bytes.NewReader(body)
+	for attempt := 0; ; attempt++ {
+		var reader io.Reader
+		if body != nil {
+			reader = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, c.base+path, reader)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if c.user != "" {
+			req.SetBasicAuth(c.user, c.pass)
+		}
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return err
+		}
+		data, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode >= 500 && attempt < retryableReads {
+			select {
+			case <-time.After(c.retryAfter):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			continue
+		}
+		if resp.StatusCode >= 300 {
+			return fmt.Errorf("OS %s %s: %s: %s", method, path, resp.Status, truncate(data, 300))
+		}
+		if out != nil {
+			return json.Unmarshal(data, out)
+		}
+		return nil
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, reader)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.user != "" {
-		req.SetBasicAuth(c.user, c.pass)
-	}
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("OS %s %s: %s: %s", method, path, resp.Status, truncate(data, 300))
-	}
-	if out != nil {
-		return json.Unmarshal(data, out)
-	}
-	return nil
 }
 
 func truncate(b []byte, n int) string {

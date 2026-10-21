@@ -84,6 +84,51 @@ func TestScrollPages(t *testing.T) {
 	}
 }
 
+func TestScrollRetries5xx(t *testing.T) {
+	var searchCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v11-log-linux-2026-10-11/_search":
+			searchCalls++
+			if searchCalls <= 2 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":{"reason":"all shards failed"}}`))
+				return
+			}
+			hits := []map[string]interface{}{{"_id": "1", "_source": map[string]interface{}{"id": "1", "dataType": "linux"}}}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"_scroll_id": "s-1",
+				"hits":       map[string]interface{}{"hits": hits},
+			})
+		case "/_search/scroll":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"hits": map[string]interface{}{"hits": []interface{}{}}})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewOSClient(OSConfig{Host: srv.URL})
+	c.retryAfter = 0 // don't actually sleep in the test
+	var got []string
+	n, err := c.Scroll(context.Background(), "v11-log-linux-2026-10-11", 2, func(id string, doc map[string]interface{}) error {
+		got = append(got, id)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Scroll: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("read %d docs, want 1", n)
+	}
+	if len(got) != 1 || got[0] != "1" {
+		t.Fatalf("got %v, want [1]", got)
+	}
+	if searchCalls != 3 {
+		t.Fatalf("search called %d times, want 3 (2x503 then success)", searchCalls)
+	}
+}
+
 func TestListIndices(t *testing.T) {
 	srv := fakeOS(t)
 	defer srv.Close()

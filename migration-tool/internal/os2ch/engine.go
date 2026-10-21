@@ -17,6 +17,11 @@ const (
 	defaultBatch = 5000
 	manifestName = "stream.yaml"
 	dumpWorkers  = 8
+	// streamAttempts bounds how many times a single index is re-streamed from
+	// scratch when its scroll dies mid-way (context expired, 5xx that escaped
+	// the client retry). Safe because the insert is atomic: a dead scroll
+	// commits no rows, so a restart can never duplicate data.
+	streamAttempts = 3
 )
 
 // IndexProgress reports that one index finished streaming, so the
@@ -179,7 +184,7 @@ func (e *Engine) StreamAll(ctx context.Context, stateDir string) (*LoadResult, e
 		for i := 0; i < workers; i++ {
 			go func() {
 				for j := range in {
-					si, err := e.streamOne(ctx, j.ds, j.idx)
+					si, err := e.streamIndexWithRetry(ctx, j.ds, j.idx)
 					outc <- streamOutcome{si: si, err: err}
 				}
 			}()
@@ -214,6 +219,19 @@ func (e *Engine) StreamAll(ctx context.Context, stateDir string) (*LoadResult, e
 		}
 	}
 	return res, nil
+}
+
+// streamIndexWithRetry re-streams an index from the start whenever the scroll
+// dies mid-way, so a single flaky index cannot abort the whole migration.
+func (e *Engine) streamIndexWithRetry(ctx context.Context, ds Dataset, index string) (StreamIndex, error) {
+	var last StreamIndex
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		last, lastErr = e.streamOne(ctx, ds, index)
+		if lastErr == nil || attempt >= streamAttempts {
+			return last, lastErr
+		}
+	}
 }
 
 // streamOne maps and streams a single index: the scroll's pull-based onPage
