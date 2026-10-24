@@ -46,7 +46,7 @@ func (i *Importer) Import(inputFile string) (Result, error) {
 	result := Result{Imported: map[string]int{}}
 	ctx := context.Background()
 
-	backup, err := readFromFile(inputFile)
+	backup, err := ReadBackupFile(inputFile)
 	if err != nil {
 		return result, fmt.Errorf("failed to read backup file: %w", err)
 	}
@@ -175,7 +175,9 @@ func (i *Importer) Import(inputFile string) (Result, error) {
 	return result, nil
 }
 
-func readFromFile(filename string) (*domain.BackupData, error) {
+// ReadBackupFile parses a data file produced by the exporter. It is exported
+// so a resumed run can re-read the file a previous run already produced.
+func ReadBackupFile(filename string) (*domain.BackupData, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)

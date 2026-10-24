@@ -187,7 +187,12 @@ These are intentionally left behind — V12 provides or re-discovers them:
   accept skipping them. You'll need to install the migration agent on those
   machines manually later.
 - **Resume is automatic.** If `prepare-agents` is interrupted, just run it
-  again — it picks up where it left off.
+  again — it picks up where it left off. The same applies to `migrate` and
+  `upgrade`: they keep a `migration-state.json` checkpoint next to the
+  running tool, so re-running the same command after a failure skips the
+  steps that already completed (including the destructive V11 cleanup and
+  the V12 install) and resumes from where it stopped. A successful run
+  deletes the checkpoint file.
 - **PostgreSQL credentials are auto-detected** from `compose.yml` when you
   don't set `password` — the only required config fields are `host`,
   `ssh_user`, and `ssh_password` or `ssh_private_key`.

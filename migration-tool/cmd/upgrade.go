@@ -12,6 +12,7 @@ import (
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/config"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/domain"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/prepareagents"
+	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/state"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/upgrade"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/pkg/ui"
 )
@@ -241,6 +242,47 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 		absBackupFile = backupFile
 	}
 
+	// Checkpoint state: created next to the running binary so a failed run
+	// can resume without repeating destructive steps.
+	cwd, err := os.Getwd()
+	if err != nil {
+		ui.Warning(fmt.Sprintf("Could not resolve working directory: %v, checkpointing disabled", err))
+	}
+	var st *state.State
+	if cwd != "" {
+		stPath := filepath.Join(cwd, state.File)
+		if loaded, lerr := state.Load(stPath); lerr != nil {
+			ui.Error(fmt.Sprintf("State file check failed: %v", lerr))
+			return lerr
+		} else if loaded != nil {
+			if err := loaded.BindCore("upgrade", cfg.Source.Host, cfg.Source.Host, upgradeWithData); err != nil {
+				ui.Error(err.Error())
+				return err
+			}
+			if upgradeBackupFile != "" && upgradeBackupFile != loaded.BackupFile {
+				ui.Error(fmt.Sprintf("State file %s belongs to data file %q, this run uses %q (delete the file to start over)", stPath, loaded.BackupFile, upgradeBackupFile))
+				return fmt.Errorf("state file bound to a different data file")
+			}
+			if upgradeBackupFile == "" {
+				backupFile = loaded.BackupFile
+				absBackupFile, err = filepath.Abs(backupFile)
+				if err != nil {
+					absBackupFile = backupFile
+				}
+				ui.Warning("Resuming from checkpoint; reusing the data file from the previous run:")
+				ui.Info(fmt.Sprintf("  %s", absBackupFile))
+			}
+			ui.Warning(fmt.Sprintf("Resuming from checkpoint: %s", stPath))
+			st = loaded
+		} else {
+			st = state.New(stPath, "upgrade", cfg.Source.Host, cfg.Source.Host, backupFile, upgradeWithData)
+			if err := st.Save(); err != nil {
+				ui.Warning(fmt.Sprintf("Could not create state file: %v, checkpointing disabled", err))
+				st = nil
+			}
+		}
+	}
+
 	mode := "local"
 	if upgradeConfigFile != "" {
 		mode = "remote"
@@ -257,12 +299,20 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 
 	ui.Step(2, 2, "Starting upgrade process")
 	upgrader := upgrade.New(cfg.Source, cfg.Databases, backupFile, upgradeWithData)
+	if st != nil {
+		upgrader = upgrader.WithState(st)
+	}
 
 	if err := upgrader.RunUpgrade(); err != nil {
 		ui.FinalError("Upgrade failed")
 		ui.Blank()
 		ui.Error(fmt.Sprintf("Error: %v", err))
 		ui.Blank()
+		if st != nil {
+			done := len(st.CompletedSteps)
+			ui.Info(fmt.Sprintf("Checkpoint saved with %d step(s) completed: %s", done, st.Path))
+			ui.Info("Re-run the same command to resume from where it stopped.")
+		}
 		ui.Info(fmt.Sprintf("Data file saved at: %s", absBackupFile))
 		ui.Info("You may need to manually restore the instance or retry")
 		return err

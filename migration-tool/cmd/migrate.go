@@ -11,11 +11,13 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/config"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/converters"
+	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/domain"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/exporter"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/keysync"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/remote"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/searchdata"
+	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/state"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/yaml"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/pkg/ui"
 )
@@ -25,6 +27,7 @@ var (
 	migrateBackupFile   string
 	migrateWithData     bool
 	migrateSearchPhases *searchdata.Phases
+	migrateSt           *state.State
 )
 
 var migrateCmd = &cobra.Command{
@@ -50,6 +53,34 @@ func init() {
 		"Also migrate search data: V11 OpenSearch tenant data -> V12 ClickHouse")
 
 	migrateCmd.MarkFlagRequired("config")
+}
+
+// loadMigrationState resolves the checkpoint for a migrate run: it loads an
+// existing state file and binds it to this run's inputs, or creates a fresh
+// one. A bound-but-mismatching file or a corrupted file is a hard error.
+func loadMigrationState(flow, generatedBackupFile, suppliedBackupFile, srcHost, dstHost string, withData bool, cwd string) (*state.State, error) {
+	stPath := filepath.Join(cwd, state.File)
+	loaded, err := state.Load(stPath)
+	if err != nil {
+		return nil, err
+	}
+	if loaded != nil {
+		if err := loaded.BindCore(flow, srcHost, dstHost, withData); err != nil {
+			return nil, err
+		}
+		if suppliedBackupFile != "" && suppliedBackupFile != loaded.BackupFile {
+			return nil, fmt.Errorf("state file %s belongs to data file %q, this run uses %q (delete the file to start over)", stPath, loaded.BackupFile, suppliedBackupFile)
+		}
+		if suppliedBackupFile == "" {
+			_ = generatedBackupFile // the checkpoint's file wins
+		}
+		return loaded, nil
+	}
+	st := state.New(stPath, flow, srcHost, dstHost, generatedBackupFile, withData)
+	if err := st.Save(); err != nil {
+		return nil, fmt.Errorf("create state file: %w", err)
+	}
+	return st, nil
 }
 
 func runMigrate(cmd *cobra.Command, args []string) error {
@@ -92,6 +123,27 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		ui.Warning(fmt.Sprintf("Could not resolve absolute path: %v, using relative path", err))
 		absBackupFile = backupFile
+	}
+
+	// Checkpoint state: a failed run resumes from the last completed step.
+	if cwd, werr := os.Getwd(); werr != nil {
+		ui.Warning(fmt.Sprintf("Could not resolve working directory: %v, checkpointing disabled", werr))
+	} else {
+		hadState, _ := state.Load(filepath.Join(cwd, state.File))
+		migrateSt, err = loadMigrationState("migrate", absBackupFile, migrateBackupFile, cfg.Source.Host, cfg.Destination.Host, migrateWithData, cwd)
+		if err != nil {
+			ui.Error(err.Error())
+			return err
+		}
+		if migrateSt.Done(state.StepExport) {
+			backupFile = migrateSt.BackupFile
+			absBackupFile, _ = filepath.Abs(backupFile)
+			ui.Warning("Resuming from checkpoint; reusing the data file from the previous run:")
+			ui.Info(fmt.Sprintf("  %s", absBackupFile))
+		}
+		if hadState != nil {
+			ui.Warning(fmt.Sprintf("Resuming from checkpoint: %s", migrateSt.Path))
+		}
 	}
 
 	totalTables := 0
@@ -181,11 +233,29 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 
 	// Export data from source
 	ui.Step(3, 7, "Exporting data from source database")
-	exp := exporter.New(cfg.Source, totalTables)
-	backup, err := exp.Export(cfg.Databases, cfg.Source.Host, backupFile)
+	var backup *domain.BackupData
+	err = runStep(migrateSt, "Data export", state.StepExport, func() error {
+		exp := exporter.New(cfg.Source, totalTables)
+		b, e := exp.Export(cfg.Databases, cfg.Source.Host, backupFile)
+		if e != nil {
+			return e
+		}
+		backup = b
+		return nil
+	})
 	if err != nil {
 		ui.Error(fmt.Sprintf("Export failed: %v", err))
-		return err
+		return migrateFailed(migrateSt, err)
+	}
+	if backup == nil {
+		// Export was skipped: the data file from the previous run must still
+		// exist, or the later steps have nothing to import.
+		backup, err = importer.ReadBackupFile(absBackupFile)
+		if err != nil {
+			ui.Error(fmt.Sprintf("Export marked done but data file is unreadable: %v", err))
+			return migrateFailed(migrateSt, err)
+		}
+		ui.Info("Reusing data file from the previous run")
 	}
 
 	// Stream the V11 OpenSearch tenant data into the V12 ClickHouse and verify
@@ -201,7 +271,9 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 
 	// Extract internal key from source
 	ui.Step(4, 7, "Extracting security credentials from source")
-	if sourceSSH != nil {
+	if migrateSt != nil && migrateSt.Done(state.StepExport) {
+		ui.Info("Internal key already saved in the data file from the previous run")
+	} else if sourceSSH != nil {
 		content, err := sourceSSH.ReadFile(config.UTMStackYMLPath)
 		if err == nil {
 			internalKey, err := yaml.ExtractInternalKeyFromYAML(content)
@@ -302,12 +374,21 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	}
 	imp := importer.New(cfg.Destination, totalTables)
 
-	result, err := imp.Import(backupFile)
-	if err != nil {
+	var result importer.Result
+	if err := runStep(migrateSt, "Data import", state.StepImport, func() error {
+		r, e := imp.Import(absBackupFile)
+		if e != nil {
+			return e
+		}
+		result = r
+		return nil
+	}); err != nil {
 		ui.Error(fmt.Sprintf("Import failed: %v", err))
-		return err
+		return migrateFailed(migrateSt, err)
 	}
-	result.PrintSummary()
+	if !migrateSt.Done(state.StepImport) {
+		result.PrintSummary()
+	}
 
 	ui.Step(7, 7, "Synchronizing security credentials to destination")
 	if destSSH != nil {
@@ -324,13 +405,16 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	// Stream the V11 OpenSearch tenant data into the V12 ClickHouse and verify
 	// it. Both endpoints are live at this point, so no disk dump is involved.
 	if migrateSearchPhases != nil {
-		if err := migrateSearchPhases.RunStream(context.Background()); err != nil {
+		if err := runStep(migrateSt, "Search data migration", state.StepStream, func() error {
+			return migrateSearchPhases.RunStream(context.Background())
+		}); err != nil {
 			ui.Error(fmt.Sprintf("Search data migration failed: %v", err))
-			return err
+			return migrateFailed(migrateSt, err)
 		}
 	}
 
 	ui.FinalSuccess("Migration completed successfully")
+	migrateSuccess(migrateSt)
 
 	ui.NextSteps([]string{
 		"Verify services are running: docker service ls",
@@ -348,5 +432,44 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		ui.Info(fmt.Sprintf("Data file kept at: %s", absBackupFile))
 	}
 
+	// Run one checkpointed step of the migrate flow: skip if a previous run
+	// already completed it, mark only after success.
+	return nil
+}
+
+func migrateFailed(st *state.State, err error) error {
+	if st != nil {
+		ui.Blank()
+		ui.Info(fmt.Sprintf("Checkpoint saved with %d step(s) completed: %s", len(st.CompletedSteps), st.Path))
+		ui.Info("Re-run the same command to resume from where it stopped.")
+	}
+	return err
+}
+
+// migrateSuccess deletes the checkpoint file: a completed run leaves no
+// artifact behind.
+func migrateSuccess(st *state.State) {
+	if st == nil {
+		return
+	}
+	if err := state.Delete(st.Path); err != nil {
+		ui.Warning(fmt.Sprintf("Could not delete state file %s: %v", st.Path, err))
+		ui.Warning("Delete it manually; the migration is complete.")
+	}
+}
+
+// runStep executes one checkpointed step: skip if a previous run already
+// completed it, mark only after success so a failed step re-runs on resume.
+func runStep(st *state.State, desc, name string, fn func() error) error {
+	if st != nil && st.Done(name) {
+		ui.Info(desc + " already done, skipping")
+		return nil
+	}
+	if err := fn(); err != nil {
+		return err
+	}
+	if st != nil {
+		return st.Mark(name)
+	}
 	return nil
 }

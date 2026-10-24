@@ -12,6 +12,7 @@ import (
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/importer"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/remote"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/searchdata"
+	"github.com/utmstack/UTMStackEnterprise/migration-tool/internal/state"
 	"github.com/utmstack/UTMStackEnterprise/migration-tool/pkg/ui"
 )
 
@@ -36,8 +37,63 @@ type Upgrader struct {
 	phases      *searchdata.Phases
 	osImage     string
 	osPassword  string
+	// st enables per-step checkpoints: completed steps are skipped on re-run.
+	st *state.State
+	// portWait overrides the fixed post-publish wait; tests set it to 0.
+	portWait time.Duration
 	// streamFn is the streaming step; defaults to phases.StreamPhantom. Swapped in tests.
 	streamFn func(apiAddr, osPass string) error
+	// confirmFn replaces validateAndConfirm in tests.
+	confirmFn func() error
+}
+
+func (u *Upgrader) publishPort(purpose string, wait time.Duration) {
+	if u.portWait > 0 {
+		wait = u.portWait
+	}
+	ui.StartOperation(fmt.Sprintf("Opening database port for %s", purpose))
+	done := make(chan error, 1)
+	go func() {
+		_, openErr := u.executor.ExecuteCommandWithSudo("docker service update --publish-add 5432:5432 utmstack_postgres")
+		done <- openErr
+	}()
+	select {
+	case openErr := <-done:
+		if openErr != nil {
+			ui.Warning(fmt.Sprintf("Failed to open port: %v", openErr))
+			return
+		}
+		ui.Success("Database port opened")
+		time.Sleep(wait)
+	case <-time.After(30 * time.Second):
+		ui.Warning("Timeout opening database port (30s)")
+	}
+}
+
+// WithState enables checkpointing for the run.
+func (u *Upgrader) WithState(st *state.State) *Upgrader {
+	u.st = st
+	return u
+}
+
+func (u *Upgrader) stepDone(name string) bool {
+	return u.st != nil && u.st.Done(name)
+}
+
+// runStep executes a step unless a previous run already completed it. The
+// step is marked only after fn succeeds, so a failed step re-runs on resume.
+func (u *Upgrader) runStep(name, desc string, fn func() error) error {
+	if u.stepDone(name) {
+		ui.Info(fmt.Sprintf("%s already done, skipping", desc))
+		return nil
+	}
+	if err := fn(); err != nil {
+		return err
+	}
+	if u.st != nil {
+		return u.st.Mark(name)
+	}
+	return nil
 }
 
 func New(sourceCfg domain.InstanceConfig, databases []domain.DatabaseSource, backupFile string, withData bool) *Upgrader {
@@ -57,15 +113,21 @@ func New(sourceCfg domain.InstanceConfig, databases []domain.DatabaseSource, bac
 }
 
 func (u *Upgrader) RunUpgrade() error {
-	if err := u.validateAndConfirm(); err != nil {
+	confirm := u.confirmFn
+	if confirm == nil {
+		confirm = u.validateAndConfirm
+	}
+	if err := confirm(); err != nil {
 		return err
 	}
 
-	if err := u.connectExecutor(); err != nil {
-		ui.Error(fmt.Sprintf("Failed to connect: %v", err))
-		return err
+	if u.executor == nil {
+		if err := u.connectExecutor(); err != nil {
+			ui.Error(fmt.Sprintf("Failed to connect: %v", err))
+			return err
+		}
+		defer u.executor.Close()
 	}
-	defer u.executor.Close()
 
 	if u.withData {
 		var err error
@@ -86,38 +148,35 @@ func (u *Upgrader) RunUpgrade() error {
 	// The V11 OpenSearch image and admin password are captured before the
 	// cleanup destroys the V11 compose. The upgrade boots a transient
 	// OpenSearch node over the preserved data volume with these exact values.
+	// On resume the captured values come from the state file: the V11 compose
+	// is already gone, so re-reading is impossible.
 	if u.withData {
-		ui.StartOperation("Capturing V11 OpenSearch configuration")
-		var err error
-		u.osImage, u.osPassword, err = u.captureOS()
-		if err != nil {
-			ui.Error(fmt.Sprintf("Failed to capture OpenSearch configuration: %v", err))
-			return err
+		if u.stepDone(state.StepCaptureOS) && u.st.OS != nil {
+			u.osImage, u.osPassword = u.st.OS.Image, u.st.OS.Password
+			ui.Info("OpenSearch configuration already captured, skipping")
+		} else {
+			ui.StartOperation("Capturing V11 OpenSearch configuration")
+			var err error
+			u.osImage, u.osPassword, err = u.captureOS()
+			if err != nil {
+				ui.Error(fmt.Sprintf("Failed to capture OpenSearch configuration: %v", err))
+				return err
+			}
+			ui.Success(fmt.Sprintf("OpenSearch image: %s", u.osImage))
+			if u.st != nil {
+				u.st.OS = &state.OSCapture{Image: u.osImage, Password: u.osPassword}
+				if err := u.st.Mark(state.StepCaptureOS); err != nil {
+					return err
+				}
+			}
 		}
-		ui.Success(fmt.Sprintf("OpenSearch image: %s", u.osImage))
 	}
 
 	// Step 1: Open port for export
-	ui.StartOperation("Opening database port for export")
-	openDone := make(chan error, 1)
-	go func() {
-		_, openErr := u.executor.ExecuteCommandWithSudo("docker service update --publish-add 5432:5432 utmstack_postgres")
-		openDone <- openErr
-	}()
-	select {
-	case openErr := <-openDone:
-		if openErr != nil {
-			ui.Warning(fmt.Sprintf("Failed to open port: %v", openErr))
-		} else {
-			ui.Success("Database port opened")
-			time.Sleep(5 * time.Second)
-		}
-	case <-time.After(30 * time.Second):
-		ui.Warning("Timeout opening database port (30s)")
-	}
+	u.publishPort("export", 5*time.Second)
 
 	// Step 2: Export data
-	if err := u.exportData(); err != nil {
+	if err := u.runStep(state.StepExport, "Data export", u.exportData); err != nil {
 		ui.Error(fmt.Sprintf("Export failed: %v", err))
 		return err
 	}
@@ -128,42 +187,31 @@ func (u *Upgrader) RunUpgrade() error {
 	// operator has already run `prepare-agents` (or explicitly bypassed the
 	// check via --skip-agent-check at the cmd layer).
 
-	// Step 3: Cleanup
-	if err := u.cleanupInstance(); err != nil {
+	// Step 3: Cleanup. Destructive and irreversible: once V11 is gone it must
+	// never run again, so the checkpoint is mandatory here.
+	if err := u.runStep(state.StepCleanup, "V11 cleanup", u.cleanupInstance); err != nil {
 		ui.Error(fmt.Sprintf("Cleanup failed: %v", err))
 		return err
 	}
 
-	// Step 5: Install V12
-	if err := u.installV12(); err != nil {
+	// Step 5: Install V12. Re-running an install on a box that is already V12
+	// would destroy the upgraded instance, so it is checkpointed like cleanup.
+	if err := u.runStep(state.StepInstall, "V12 installation", u.installV12); err != nil {
 		ui.Error(fmt.Sprintf("V12 installation failed: %v", err))
 		return err
 	}
 
-	// Step 6: Wait for services
-	ui.Blank()
-	ui.StartOperation("Waiting for services to initialize")
-	time.Sleep(PostInstallWaitTime)
-	ui.Success("Services initialized")
+	// Step 6: Wait for services. Only after a fresh install; on resume the
+	// services have long been up.
+	if !u.stepDone(state.StepInstall) {
+		ui.Blank()
+		ui.StartOperation("Waiting for services to initialize")
+		time.Sleep(PostInstallWaitTime)
+		ui.Success("Services initialized")
+	}
 
 	// Step 7: Open port for import
-	ui.StartOperation("Opening database port for import")
-	openDone2 := make(chan error, 1)
-	go func() {
-		_, openErr := u.executor.ExecuteCommandWithSudo("docker service update --publish-add 5432:5432 utmstack_postgres")
-		openDone2 <- openErr
-	}()
-	select {
-	case openErr := <-openDone2:
-		if openErr != nil {
-			ui.Warning(fmt.Sprintf("Failed to open port: %v", openErr))
-		} else {
-			ui.Success("Database port opened")
-			time.Sleep(10 * time.Second)
-		}
-	case <-time.After(30 * time.Second):
-		ui.Warning("Timeout opening database port (30s)")
-	}
+	u.publishPort("import", 10*time.Second)
 
 	// Step 8: Get new password
 	ui.StartOperation("Reading new PostgreSQL credentials")
@@ -176,8 +224,9 @@ func (u *Upgrader) RunUpgrade() error {
 
 	u.sourceCfg.Password = newPassword
 
-	// Step 9: Import data
-	if err := u.importData(); err != nil {
+	// Step 9: Import data. Upserts are idempotent, but a completed import is
+	// skipped on resume to avoid rewriting every row.
+	if err := u.runStep(state.StepImport, "Data import", u.importData); err != nil {
 		ui.Error(fmt.Sprintf("Import failed: %v", err))
 		return err
 	}
@@ -186,10 +235,13 @@ func (u *Upgrader) RunUpgrade() error {
 	// cleanup preserved /utmstack/opensearch; a transient OpenSearch node
 	// boots over that volume and the data streams straight into ClickHouse.
 	// The node is removed only when the stream finishes without errors.
+	// Inside the step, the per-index stream manifest resumes at document level.
 	if u.withData {
-		if err := u.streamPhantomData(); err != nil {
+		err := u.runStep(state.StepStream, "Search data stream", u.streamPhantomData)
+		if err != nil {
 			ui.Error(fmt.Sprintf("Search data stream failed: %v", err))
 			ui.Warning("The transient OpenSearch node stays up for a retry; the data volume is untouched.")
+			ui.Warning("Re-running the same command resumes from the last completed step.")
 			return err
 		}
 	}
@@ -213,6 +265,14 @@ func (u *Upgrader) RunUpgrade() error {
 	}
 
 	ui.FinalSuccess("Upgrade completed successfully")
+
+	// A fully completed run leaves no checkpoint behind.
+	if u.st != nil {
+		if err := state.Delete(u.st.Path); err != nil {
+			ui.Warning(fmt.Sprintf("Could not delete state file %s: %v", u.st.Path, err))
+			ui.Warning("Delete it manually; it is not needed for the upgraded instance.")
+		}
+	}
 
 	ui.NextSteps([]string{
 		"Verify services are running: docker service ls",
