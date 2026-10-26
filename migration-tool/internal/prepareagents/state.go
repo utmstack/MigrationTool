@@ -48,6 +48,7 @@ const MissingCyclesThreshold = 3
 // AgentState is the persisted state for one agent.
 type AgentState struct {
 	AgentKey      string    // PRIMARY KEY — stable identifier from the AgentManager
+	ID            uint32    // Numeric agent id from AgentManager, used for ProcessCommand targeting
 	Hostname      string    // Updated on every sync
 	IP            string    // Updated on every sync
 	OS            string    // linux, windows, darwin

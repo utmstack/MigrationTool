@@ -189,6 +189,7 @@ func (s *Store) migrateV1() error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS agents (
 			agent_key      TEXT PRIMARY KEY,
+			id             INTEGER NOT NULL DEFAULT 0,
 			hostname       TEXT NOT NULL,
 			ip             TEXT NOT NULL,
 			os             TEXT NOT NULL,
@@ -269,7 +270,7 @@ func (s *Store) SetMetadata(key, value string) error {
 // agent transitions back to PENDING so the orchestrator picks it up.
 //
 // `online` indicates whether the AgentManager currently reports this agent as ONLINE.
-func (s *Store) UpsertDiscoveredAgent(ctx context.Context, agentKey, hostname, ip, agentOS string, online bool) error {
+func (s *Store) UpsertDiscoveredAgent(ctx context.Context, agentKey string, agentId uint32, hostname, ip, agentOS string, online bool) error {
 	now := time.Now().UTC()
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -291,10 +292,10 @@ func (s *Store) UpsertDiscoveredAgent(ctx context.Context, agentKey, hostname, i
 		}
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO agents(
-				agent_key, hostname, ip, os, architecture, state,
+				agent_key, id, hostname, ip, os, architecture, state,
 				attempts, missing_cycles, last_error, created_at, updated_at
-			) VALUES(?, ?, ?, ?, '', ?, 0, 0, '', ?, ?)
-		`, agentKey, hostname, ip, agentOS, initialState, now, now)
+			) VALUES(?, ?, ?, ?, ?, '', ?, 0, 0, '', ?, ?)
+		`, agentKey, agentId, hostname, ip, agentOS, initialState, now, now)
 		if err != nil {
 			return fmt.Errorf("insert agent: %w", err)
 		}
@@ -319,10 +320,10 @@ func (s *Store) UpsertDiscoveredAgent(ctx context.Context, agentKey, hostname, i
 
 		_, err = tx.ExecContext(ctx, `
 			UPDATE agents
-			SET hostname = ?, ip = ?, os = ?, state = ?,
+			SET hostname = ?, ip = ?, os = ?, id = ?, state = ?,
 			    missing_cycles = 0, updated_at = ?
 			WHERE agent_key = ?
-		`, hostname, ip, agentOS, newState, now, agentKey)
+		`, hostname, ip, agentOS, agentId, newState, now, agentKey)
 		if err != nil {
 			return fmt.Errorf("update agent: %w", err)
 		}
@@ -407,7 +408,7 @@ func (s *Store) IncrementMissingCycles(ctx context.Context, presentKeys map[stri
 // StateOffline agents are NOT included; they need to come back via UpsertDiscoveredAgent first.
 func (s *Store) SelectActionable(ctx context.Context, now time.Time) ([]AgentState, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT agent_key, hostname, ip, os, architecture, state, attempts, missing_cycles,
+		SELECT agent_key, id, hostname, ip, os, architecture, state, attempts, missing_cycles,
 		       COALESCE(last_attempt, ''), COALESCE(next_retry, ''), last_error,
 		       COALESCE(deployed_at, ''), created_at, updated_at
 		FROM agents
@@ -501,7 +502,7 @@ func (s *Store) MarkSkipped(ctx context.Context) (int64, error) {
 // ListByState returns agents currently in the given state.
 func (s *Store) ListByState(ctx context.Context, state State) ([]AgentState, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT agent_key, hostname, ip, os, architecture, state, attempts, missing_cycles,
+		SELECT agent_key, id, hostname, ip, os, architecture, state, attempts, missing_cycles,
 		       COALESCE(last_attempt, ''), COALESCE(next_retry, ''), last_error,
 		       COALESCE(deployed_at, ''), created_at, updated_at
 		FROM agents
@@ -569,7 +570,7 @@ func scanAgent(r rowScanner) (AgentState, error) {
 		lastAttemptStr, nextRetryStr, depStr string
 	)
 	err := r.Scan(
-		&a.AgentKey, &a.Hostname, &a.IP, &a.OS, &a.Architecture, &a.State,
+		&a.AgentKey, &a.ID, &a.Hostname, &a.IP, &a.OS, &a.Architecture, &a.State,
 		&a.Attempts, &a.MissingCycles,
 		&lastAttemptStr, &nextRetryStr, &a.LastError,
 		&depStr, &a.CreatedAt, &a.UpdatedAt,

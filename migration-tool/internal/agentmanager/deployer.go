@@ -59,7 +59,7 @@ func (d *Deployer) DeployToAgent(ctx context.Context, agent *Agent) *DeployResul
 	archCmd := GetArchDetectCommand(platformInfo)
 	archResult, err := d.client.ExecuteCommand(
 		deployCtx,
-		agent.AgentKey,
+		agent.Id,
 		archCmd,
 		"Detect architecture for migrate_agent download",
 	)
@@ -87,7 +87,7 @@ func (d *Deployer) DeployToAgent(ctx context.Context, agent *Agent) *DeployResul
 	downloadCmd := GetDownloadCommand(platformInfo)
 	downloadResult, err := d.client.ExecuteCommand(
 		deployCtx,
-		agent.AgentKey,
+		agent.Id,
 		downloadCmd,
 		fmt.Sprintf("Download migrate_agent (%s/%s) for V10->V11 migration", platformInfo.OS, platformInfo.Architecture),
 	)
@@ -113,7 +113,7 @@ func (d *Deployer) DeployToAgent(ctx context.Context, agent *Agent) *DeployResul
 	verifyDownloadCmd := GetVerifyDownloadCommand(platformInfo)
 	verifyDownloadResult, err := d.client.ExecuteCommand(
 		deployCtx,
-		agent.AgentKey,
+		agent.Id,
 		verifyDownloadCmd,
 		"Verify migrate_agent download",
 	)
@@ -137,7 +137,7 @@ func (d *Deployer) DeployToAgent(ctx context.Context, agent *Agent) *DeployResul
 	installCmd := GetInstallCommand(platformInfo)
 	installResult, err := d.client.ExecuteCommand(
 		deployCtx,
-		agent.AgentKey,
+		agent.Id,
 		installCmd,
 		"Install migrate_agent service for V10->V11 migration",
 	)
@@ -162,7 +162,7 @@ func (d *Deployer) DeployToAgent(ctx context.Context, agent *Agent) *DeployResul
 	verifyInstallCmd := GetVerifyInstallCommand(platformInfo)
 	verifyInstallResult, err := d.client.ExecuteCommand(
 		deployCtx,
-		agent.AgentKey,
+		agent.Id,
 		verifyInstallCmd,
 		"Verify migrate_agent installation",
 	)

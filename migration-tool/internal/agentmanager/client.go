@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -120,7 +121,7 @@ type CommandExecResult struct {
 	Duration time.Duration
 }
 
-func (c *Client) ExecuteCommand(ctx context.Context, agentKey, command, reason string) (*CommandExecResult, error) {
+func (c *Client) ExecuteCommand(ctx context.Context, agentId uint32, command, reason string) (*CommandExecResult, error) {
 	ctx, cancel := context.WithTimeout(c.contextWithAuth(ctx), CommandTimeout)
 	defer cancel()
 
@@ -131,8 +132,11 @@ func (c *Client) ExecuteCommand(ctx context.Context, agentKey, command, reason s
 		return nil, fmt.Errorf("failed to create command stream: %w", err)
 	}
 
+	// V11/V12 servers Atoi field 1 (agent_id); the local V10 proto names it agent_key.
+	agentIdStr := strconv.FormatUint(uint64(agentId), 10)
+
 	err = stream.Send(&UtmCommand{
-		AgentKey:   agentKey,
+		AgentKey:   agentIdStr,
 		Command:    command,
 		ExecutedBy: "migration-tool",
 		CmdId:      "",
@@ -152,7 +156,7 @@ func (c *Client) ExecuteCommand(ctx context.Context, agentKey, command, reason s
 	if err != nil {
 		if err == io.EOF {
 			return &CommandExecResult{
-				AgentKey: agentKey,
+				AgentKey: agentIdStr,
 				Success:  false,
 				Error:    fmt.Errorf("stream closed without result"),
 				Duration: time.Since(startTime),

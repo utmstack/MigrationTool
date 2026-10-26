@@ -114,7 +114,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		for _, a := range agents {
 			presentKeys[a.AgentKey] = struct{}{}
 			online := a.Status == agentmanager.Status_ONLINE
-			if err := o.store.UpsertDiscoveredAgent(ctx, a.AgentKey, a.Hostname, a.Ip, a.Os, online); err != nil {
+			if err := o.store.UpsertDiscoveredAgent(ctx, a.AgentKey, a.Id, a.Hostname, a.Ip, a.Os, online); err != nil {
 				ui.Warning(fmt.Sprintf("Failed to persist agent %s: %v", a.AgentKey, err))
 			}
 		}
@@ -189,6 +189,7 @@ func (o *Orchestrator) deployBatch(ctx context.Context, batch []AgentState) {
 			// Build the minimal Agent the Deployer needs.
 			amAgent := &agentmanager.Agent{
 				AgentKey: a.AgentKey,
+				Id:       a.ID,
 				Hostname: a.Hostname,
 				Ip:       a.IP,
 				Os:       a.OS,
