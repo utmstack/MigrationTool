@@ -5,7 +5,7 @@ import "time"
 const (
 	MigrationServiceName            = "UTMStackMigrateAgent"
 	MigrationServiceDisplayName     = "UTMStack Migrate Agent Service"
-	MigrationServiceDescription     = "Monitors and migrates UTMStack Agent from v10 to v11"
+	MigrationServiceDescription     = "Monitors and migrates UTMStack Agent from v11 to v12"
 	AgentServiceName                = "UTMStackAgent"
 	UpdaterServiceName              = "UTMStackUpdater"
 	LogsCollectorServiceName        = "UTMStackModulesLogsCollector"

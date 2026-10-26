@@ -141,7 +141,7 @@ func (c *Client) ExecuteCommand(ctx context.Context, agentId uint32, command, re
 		ExecutedBy: "migration-tool",
 		CmdId:      "",
 		OriginType: "migration",
-		OriginId:   "upgrade-v11",
+		OriginId:   "upgrade-v12",
 		Reason:     reason,
 	})
 	if err != nil {

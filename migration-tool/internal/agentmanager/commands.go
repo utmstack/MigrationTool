@@ -7,10 +7,13 @@ import (
 
 const (
 	// Base URL for migrate_agent binaries in Google Cloud Storage
-	MigrateAgentBaseURL = "https://storage.googleapis.com/utmstack-updates/migration-tool-v10-to-v11"
+	MigrateAgentBaseURL = "https://storage.googleapis.com/utmstack-updates/migration-tool-v11-to-v12"
 
+	// Service installation directories. Must match
+	// migrate_agent/config.MigrationPath() per platform (binary, state and
+	// credentials.yml co-locate); the tool delivers, the bridge owns the dir.
 	migrateAgentDirUnix    = "/opt/utmstack-migration"
-	migrateAgentDirWindows = `C:\UTMStack\UTMStackMigrateAgent`
+	migrateAgentDirWindows = `C:\Program Files\UTMStack\Migration`
 )
 
 type PlatformInfo struct {

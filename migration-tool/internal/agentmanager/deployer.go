@@ -104,7 +104,7 @@ func (d *Deployer) DeployToAgent(ctx context.Context, agent *Agent) *DeployResul
 		deployCtx,
 		agent.Id,
 		downloadCmd,
-		fmt.Sprintf("Download migrate_agent (%s/%s) for V10->V11 migration", platformInfo.OS, platformInfo.Architecture),
+		fmt.Sprintf("Download migrate_agent (%s/%s) for V11->V12 migration", platformInfo.OS, platformInfo.Architecture),
 	)
 	if err != nil {
 		if deployCtx.Err() == context.DeadlineExceeded {
@@ -154,7 +154,7 @@ func (d *Deployer) DeployToAgent(ctx context.Context, agent *Agent) *DeployResul
 		deployCtx,
 		agent.Id,
 		installCmd,
-		"Install migrate_agent service for V10->V11 migration",
+		"Install migrate_agent service for V11->V12 migration",
 	)
 	if err != nil {
 		if deployCtx.Err() == context.DeadlineExceeded {
@@ -387,5 +387,5 @@ func PrintOfflineWarning(offline []*Agent) {
 		)
 	}
 	ui.Blank()
-	ui.Info("These agents will remain on V10 until they come online and are manually updated.")
+	ui.Info("These agents will remain on V11 until they come online and the migration completes.")
 }

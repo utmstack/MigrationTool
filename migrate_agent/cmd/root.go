@@ -9,13 +9,15 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "migrate_agent",
-	Short: "UTMStack Agent v10 to v11 Migration Service",
-	Long: `A cross-platform service that monitors the UTMStack Agent 
-and performs automatic migration from v10 to v11.
+	Short: "UTMStack Agent v11 to v12 Migration Service",
+	Long: `A cross-platform service that performs the local part of the
+UTMStack Agent v11 to v12 migration.
 
-It polls the agent's version.json file and when v11 is detected,
-it downloads the new binary, updates the service configuration,
-and restarts the agent service.`,
+It polls the panel's version.json over HTTPS and, once the panel
+reports a V12 and this agent's id is listed there, it uninstalls
+the local V11 agent, downloads the V12 binary from the panel,
+installs it fresh with the panel connection key, verifies the
+result and removes itself.`,
 }
 
 // Execute adds all child commands to the root command and sets flags
