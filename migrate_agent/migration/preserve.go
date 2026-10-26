@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/utmstack/MigrationTool/config"
@@ -16,19 +15,20 @@ import (
 // dir into MigrationPath() before the dir is wiped. They stay there for the
 // forwarder install step; the V12 agent itself never uses them.
 func extractForForwarder() error {
-	entries, err := os.ReadDir(config.AgentPath())
-	if err != nil {
-		return fmt.Errorf("read agent dir: %w", err)
-	}
-
-	for _, e := range entries {
-		if e.IsDir() || !slices.Contains(config.PreservedForForwarder, e.Name()) {
+	for _, rel := range config.PreservedForForwarder {
+		src := filepath.Join(config.AgentPath(), rel)
+		if _, err := os.Stat(src); err != nil {
 			continue
 		}
-		src := filepath.Join(config.AgentPath(), e.Name())
-		dst := filepath.Join(config.MigrationPath(), e.Name())
+		dst := filepath.Join(config.MigrationPath(), rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			if utils.Logger != nil {
+				utils.Logger.ErrorF("Extract dir %s: %v", filepath.Dir(dst), err)
+			}
+			continue
+		}
 		if err := copyFile(src, dst); err != nil && utils.Logger != nil {
-			utils.Logger.ErrorF("Extract %s: %v", e.Name(), err)
+			utils.Logger.ErrorF("Extract %s: %v", rel, err)
 		}
 	}
 	return nil

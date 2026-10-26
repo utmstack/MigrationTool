@@ -76,6 +76,7 @@ func dialBufconn(t *testing.T, agent *fakeAgentServer, panel *fakePanelServer) *
 		conn:        conn,
 		agents:      pb.NewAgentServiceClient(conn),
 		panel:       pb.NewPanelServiceClient(conn),
+		collectors:  pb.NewCollectorServiceClient(conn),
 		internalKey: "the-internal-key",
 	}
 }
@@ -126,5 +127,40 @@ func TestNewPanelRejectsEmpty(t *testing.T) {
 	}
 	if _, err := NewPanel("host", "", false); err == nil {
 		t.Error("expected error for empty internal key")
+	}
+}
+
+func TestEnabledListenersTCPWinsAndTLS(t *testing.T) {
+	cnf := &V11CollectorConfig{Integrations: map[string]V11Integration{
+		"ciscoasa": {
+			TCPPort: Port{Enabled: true, Value: "10514", TLSEnabled: false},
+			UDPPort: Port{Enabled: true, Value: "10515"},
+		},
+		"panorama": {
+			TCPPort: Port{Enabled: true, Value: "10516", TLSEnabled: true},
+		},
+	}}
+
+	got := EnabledListeners(cnf)
+	if len(got) != 2 {
+		t.Fatalf("got %d listeners, want 2: %+v", len(got), got)
+	}
+	// Sorted by data type: ciscoasa first, panorama second.
+	if got[0].DataType != "ciscoasa" || got[0].Proto != "tcp" || got[0].Port != "10514" || got[0].TLS {
+		t.Errorf("ciscoasa = %+v, want tcp 10514 no-tls (tcp wins over udp)", got[0])
+	}
+	if got[1].DataType != "panorama" || got[1].Proto != "tls" || got[1].Port != "10516" || !got[1].TLS {
+		t.Errorf("panorama = %+v, want tls 10516 tls", got[1])
+	}
+}
+
+func TestEnabledListenersUDPOnly(t *testing.T) {
+	cnf := &V11CollectorConfig{Integrations: map[string]V11Integration{
+		"netflow": {UDPPort: Port{Enabled: true, Value: "10517"}},
+	}}
+
+	got := EnabledListeners(cnf)
+	if len(got) != 1 || got[0].DataType != "netflow" || got[0].Proto != "udp" || got[0].Port != "10517" || got[0].TLS {
+		t.Errorf("got %+v, want netflow udp 10517 no-tls", got)
 	}
 }

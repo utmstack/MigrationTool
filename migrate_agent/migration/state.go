@@ -22,6 +22,7 @@ const (
 	StateSelfUninstall
 	StateDone
 	StateFailed
+	StateForwarder
 )
 
 // String returns a human-readable state name
@@ -36,6 +37,7 @@ func (s State) String() string {
 		"self_uninstall",
 		"done",
 		"failed",
+		"forwarder",
 	}
 	if int(s) < len(names) {
 		return names[s]
@@ -45,12 +47,12 @@ func (s State) String() string {
 
 // StateFile holds the persisted migration state
 type StateFile struct {
-	State      State   `json:"state"`
-	Version    string  `json:"version,omitempty"`
-	AgentID    uint32  `json:"agent_id,omitempty"`
-	LastError  string  `json:"last_error,omitempty"`
-	RetryCount int     `json:"retry_count,omitempty"`
-	Connection string  `json:"connection,omitempty"`
+	State      State  `json:"state"`
+	Version    string `json:"version,omitempty"`
+	AgentID    uint32 `json:"agent_id,omitempty"`
+	LastError  string `json:"last_error,omitempty"`
+	RetryCount int    `json:"retry_count,omitempty"`
+	Connection string `json:"connection,omitempty"`
 }
 
 // LoadState reads the state file from disk

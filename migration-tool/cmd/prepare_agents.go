@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -354,14 +355,25 @@ func showPlanAndConfirm(client *agentmanager.Client, store *prepareagents.Store)
 	}
 
 	online, offline := 0, 0
+	nonLinux := make([]string, 0)
 	for _, a := range agents {
 		if a.Status == agentmanager.Status_ONLINE {
 			online++
 		} else {
 			offline++
 		}
+		if strings.ToLower(strings.TrimSpace(a.Os)) != "linux" {
+			nonLinux = append(nonLinux, a.Hostname)
+		}
 	}
 	ui.Success(fmt.Sprintf("Inventory ready (%d agents)", len(agents)))
+
+	if len(nonLinux) > 0 {
+		ui.Warning(fmt.Sprintf(
+			"Non-Linux agent(s) that will NOT migrate their protocol listeners "+
+				"(the V12 forwarder is Linux-only): %s. The agent itself migrates fine.",
+			strings.Join(nonLinux, ", ")))
+	}
 
 	// Prior-run state — informational, may be all zeros on a fresh run.
 	prior, statsErr := store.ComputeStats(context.Background())

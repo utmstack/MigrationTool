@@ -230,6 +230,10 @@ func (m *Migrator) executeMigration(ctx context.Context) error {
 			if err := m.doVerify(); err != nil {
 				return m.handleStepError(err)
 			}
+		case StateForwarder:
+			if err := m.doForwarder(ctx); err != nil {
+				return m.handleStepError(err)
+			}
 		case StateSelfUninstall:
 			if err := m.doSelfUninstall(); err != nil {
 				return m.handleStepError(err)
@@ -375,7 +379,7 @@ func (m *Migrator) doVerify() error {
 	if utils.Logger != nil {
 		utils.Logger.Info("Verified v12 agent running")
 	}
-	return m.state.SetState(StateSelfUninstall)
+	return m.state.SetState(StateForwarder)
 }
 
 // doSelfUninstall removes the bridge service.

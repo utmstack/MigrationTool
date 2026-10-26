@@ -36,3 +36,8 @@ func LaunchdPlistPath() string {
 func SystemdServicePath() string {
 	return ""
 }
+
+// ForwarderPath is not used on macOS (forwarder is Linux-only).
+func ForwarderPath() string {
+	return ""
+}

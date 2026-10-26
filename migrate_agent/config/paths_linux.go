@@ -40,3 +40,9 @@ func MigrationStatePath() string {
 func SystemdServicePath() string {
 	return "/etc/systemd/system/UTMStackAgent.service"
 }
+
+// ForwarderPath returns the forwarder installation directory. The forwarder
+// is Linux-only; other platforms return empty and never install it.
+func ForwarderPath() string {
+	return "/opt/utmstack-linux-forwarder/"
+}

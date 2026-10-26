@@ -40,3 +40,8 @@ func MigrationStatePath() string {
 func SystemdServicePath() string {
 	return ""
 }
+
+// ForwarderPath is not used on Windows (forwarder is Linux-only).
+func ForwarderPath() string {
+	return ""
+}
