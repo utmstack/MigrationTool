@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -188,4 +189,32 @@ func UpdateServiceExecPath(binaryPath string) error {
 		utils.Logger.Info("Plist file updated successfully")
 	}
 	return nil
+}
+
+// RemoveAgentService performs the local-only uninstall on macOS: unloads the
+// agent and updater launchd services and removes their plists. It never talks
+// to the panel (no DeleteAgent).
+func RemoveAgentService() error {
+	for _, label := range []string{config.AgentServiceName, config.UpdaterServiceName} {
+		plist := launchdPlistFor(label)
+		cmd := exec.Command("launchctl", "unload", plist)
+		if output, err := cmd.CombinedOutput(); err != nil && utils.Logger != nil {
+			utils.Logger.Info("Unload %s: %s (may already be unloaded)", label, strings.TrimSpace(string(output)))
+		}
+		if _, err := os.Stat(plist); os.IsNotExist(err) {
+			continue
+		}
+		if err := os.Remove(plist); err != nil && !os.IsNotExist(err) && utils.Logger != nil {
+			utils.Logger.ErrorF("Failed to remove plist %s: %v", plist, err)
+		}
+	}
+	return RemoveLogsCollectorService()
+}
+
+func launchdPlistFor(label string) string {
+	if label == config.AgentServiceName {
+		return config.LaunchdPlistPath()
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "Library", "LaunchAgents", label+".plist")
 }

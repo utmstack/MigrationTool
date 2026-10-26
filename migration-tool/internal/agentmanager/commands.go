@@ -160,3 +160,46 @@ func GetVerifyInstallCommand(info PlatformInfo) string {
 
 	return `if systemctl is-enabled UTMStackMigrateAgent 2>/dev/null || [ -f /etc/systemd/system/UTMStackMigrateAgent.service ]; then echo "OK"; else echo "ERROR: Service not installed"; fi`
 }
+
+// MigrateAgentCredentialsDir is where the bridge reads credentials.yml. It
+// MUST match migrate_agent/config.MigrationPath() on each platform — the tool
+// only delivers the file, the bridge owns the path. On Windows that differs
+// from the tool's own download dir (migrateAgentDirWindows), so do not reuse
+// it here.
+func MigrateAgentCredentialsDir(info PlatformInfo) string {
+	if info.IsWindows {
+		return `C:\Program Files\UTMStack\Migration`
+	}
+	return "/opt/utmstack-migration"
+}
+
+// GetWriteCredentialsCommand returns the command that decodes the base64-encoded
+// credentials file into the bridge's migration directory. base64 keeps the
+// internal key out of shell quoting, and single-line form matches how the
+// agent's command runner executes other migrate_agent commands. The directory
+// is created (idempotent) so the file is in place before the bridge starts.
+func GetWriteCredentialsCommand(info PlatformInfo, base64Content string) string {
+	dir := MigrateAgentCredentialsDir(info)
+	if info.IsWindows {
+		b64Path := dir + `\credentials.yml.b64`
+		outPath := dir + `\credentials.yml`
+		return fmt.Sprintf(
+			`if not exist %s mkdir %s & echo %s > %s & certutil -decode %s %s`,
+			dir, dir, base64Content, b64Path, b64Path, outPath,
+		)
+	}
+	return fmt.Sprintf(
+		`mkdir -p %s && echo '%s' | base64 -d > %s/credentials.yml`,
+		dir, base64Content, dir,
+	)
+}
+
+// GetVerifyCredentialsCommand returns a per-platform command that confirms
+// credentials.yml landed where the bridge reads it.
+func GetVerifyCredentialsCommand(info PlatformInfo) string {
+	dir := MigrateAgentCredentialsDir(info)
+	if info.IsWindows {
+		return fmt.Sprintf(`if exist %s\credentials.yml (echo OK) else (echo ERROR: File not found)`, dir)
+	}
+	return fmt.Sprintf(`if [ -f '%s/credentials.yml' ]; then echo "OK"; else echo "ERROR: File not found"; fi`, dir)
+}

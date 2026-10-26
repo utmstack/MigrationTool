@@ -2,6 +2,7 @@ package agentmanager
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"sync"
@@ -35,6 +36,12 @@ type DeployStats struct {
 type Deployer struct {
 	client      *Client
 	concurrency int
+
+	// Bridge credentials: the destination V12 panel host and the internal key
+	// shared by source and destination. The bridge reads these from
+	// credentials.yml and uses them to dial GetConnectionKey over 443.
+	destServer  string
+	internalKey string
 }
 
 func NewDeployer(client *Client) *Deployer {
@@ -42,6 +49,14 @@ func NewDeployer(client *Client) *Deployer {
 		client:      client,
 		concurrency: 5, // Deploy to 5 agents in parallel
 	}
+}
+
+// SetCredentials binds the destination server and internal key that every
+// bridge will receive via credentials.yml. Must be called before
+// DeployToAgent when writing credentials.
+func (d *Deployer) SetCredentials(destServer, internalKey string) {
+	d.destServer = destServer
+	d.internalKey = internalKey
 }
 
 func (d *Deployer) DeployToAgent(ctx context.Context, agent *Agent) *DeployResult {
@@ -180,6 +195,58 @@ func (d *Deployer) DeployToAgent(ctx context.Context, agent *Agent) *DeployResul
 		result.Error = fmt.Errorf("install verification failed: service not found after install")
 		result.Duration = time.Since(startTime)
 		return result
+	}
+
+	// Step 6: write credentials.yml for the bridge. Skipped when no
+	// destination server was bound via SetCredentials.
+	if d.destServer != "" {
+		credsYAML := fmt.Sprintf(
+			"server: '%s'\ninternal_key: '%s'\n",
+			d.destServer, d.internalKey,
+		)
+		credsB64 := base64.StdEncoding.EncodeToString([]byte(credsYAML))
+
+		writeCredsResult, err := d.client.ExecuteCommand(
+			deployCtx,
+			agent.Id,
+			GetWriteCredentialsCommand(platformInfo, credsB64),
+			"Write bridge credentials for V11->V12 connection-key fetch",
+		)
+		if err != nil {
+			if deployCtx.Err() == context.DeadlineExceeded {
+				result.Error = fmt.Errorf("deployment timed out after %v", DeployTimeout)
+			} else {
+				result.Error = fmt.Errorf("credentials write failed: %w", err)
+			}
+			result.Duration = time.Since(startTime)
+			return result
+		}
+		if !writeCredsResult.Success {
+			result.Error = fmt.Errorf("credentials write failed: %s", writeCredsResult.Output)
+			result.Duration = time.Since(startTime)
+			return result
+		}
+
+		verifyCredsResult, err := d.client.ExecuteCommand(
+			deployCtx,
+			agent.Id,
+			GetVerifyCredentialsCommand(platformInfo),
+			"Verify bridge credentials file",
+		)
+		if err != nil {
+			if deployCtx.Err() == context.DeadlineExceeded {
+				result.Error = fmt.Errorf("deployment timed out after %v", DeployTimeout)
+			} else {
+				result.Error = fmt.Errorf("credentials verification failed: %w", err)
+			}
+			result.Duration = time.Since(startTime)
+			return result
+		}
+		if !strings.Contains(verifyCredsResult.Output, "OK") {
+			result.Error = fmt.Errorf("credentials verification failed: file not found")
+			result.Duration = time.Since(startTime)
+			return result
+		}
 	}
 
 	result.Success = true

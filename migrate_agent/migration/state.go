@@ -15,12 +15,9 @@ type State int
 const (
 	StateIdle State = iota
 	StateDetected
-	StateStopping
+	StateUninstalling
 	StateDownloading
-	StateCleaning
-	StateMigratingConfig
-	StateUpdating
-	StateStarting
+	StateInstalling
 	StateVerifying
 	StateSelfUninstall
 	StateDone
@@ -32,12 +29,9 @@ func (s State) String() string {
 	names := []string{
 		"idle",
 		"detected",
-		"stopping",
+		"uninstalling",
 		"downloading",
-		"cleaning",
-		"migrating_config",
-		"updating",
-		"starting",
+		"installing",
 		"verifying",
 		"self_uninstall",
 		"done",
@@ -51,11 +45,12 @@ func (s State) String() string {
 
 // StateFile holds the persisted migration state
 type StateFile struct {
-	State      State  `json:"state"`
-	Version    string `json:"version,omitempty"`
-	LastError  string `json:"last_error,omitempty"`
-	RetryCount int    `json:"retry_count,omitempty"`
-	BinaryPath string `json:"binary_path,omitempty"`
+	State      State   `json:"state"`
+	Version    string  `json:"version,omitempty"`
+	AgentID    uint32  `json:"agent_id,omitempty"`
+	LastError  string  `json:"last_error,omitempty"`
+	RetryCount int     `json:"retry_count,omitempty"`
+	Connection string  `json:"connection,omitempty"`
 }
 
 // LoadState reads the state file from disk
@@ -83,7 +78,6 @@ func LoadState() (*StateFile, error) {
 func (sf *StateFile) Save() error {
 	statePath := config.MigrationStatePath()
 
-	// Ensure directory exists
 	if err := os.MkdirAll(filepath.Dir(statePath), 0755); err != nil {
 		return fmt.Errorf("failed to create state directory: %w", err)
 	}

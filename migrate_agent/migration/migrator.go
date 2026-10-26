@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,10 +20,10 @@ type VersionInfo struct {
 	Version string `json:"version"`
 }
 
-// Migrator handles the v10 to v11 migration process
+// Migrator handles the v11 to v12 agent migration via a clean local reinstall.
 type Migrator struct {
 	state *StateFile
-	cfg   *config.AgentConfig
+	creds *config.Credentials
 }
 
 // NewMigrator creates a new Migrator instance
@@ -46,8 +47,7 @@ func (m *Migrator) Run(ctx context.Context) error {
 	ticker := time.NewTicker(config.PollInterval)
 	defer ticker.Stop()
 
-	// Check immediately on start
-	if err := m.checkAndMigrate(); err != nil {
+	if err := m.checkAndMigrate(ctx); err != nil {
 		if utils.Logger != nil {
 			utils.Logger.ErrorF("Migration check failed: %v", err)
 		}
@@ -61,7 +61,7 @@ func (m *Migrator) Run(ctx context.Context) error {
 			}
 			return nil
 		case <-ticker.C:
-			if err := m.checkAndMigrate(); err != nil {
+			if err := m.checkAndMigrate(ctx); err != nil {
 				if utils.Logger != nil {
 					utils.Logger.ErrorF("Migration check failed: %v", err)
 				}
@@ -70,73 +70,25 @@ func (m *Migrator) Run(ctx context.Context) error {
 	}
 }
 
-func (m *Migrator) checkAndMigrate() error {
-	// If already failed permanently, don't retry
-	if m.state.State == StateFailed {
-		return nil
+// shouldMigrate fires when the panel serves v12 and the local agent is v11.
+func shouldMigrate(served, local string, localExists bool) bool {
+	if served == "" || !localExists {
+		return false
 	}
-
-	// If migration is done, don't do anything more
-	if m.state.State == StateDone {
-		return nil
-	}
-
-	// If we're in self-uninstall state, just set done and exit
-	// (the self-uninstall process is already running or will run)
-	if m.state.State == StateSelfUninstall {
-		if utils.Logger != nil {
-			utils.Logger.Info("Migration already completed, waiting for self-uninstall to finish")
-		}
-		m.state.SetState(StateDone)
-		return nil
-	}
-
-	// If we were in the middle of a migration, resume from that state
-	if m.state.State != StateIdle && m.state.State != StateDone {
-		// Check max retries before resuming
-		if m.state.RetryCount >= config.MigrationMaxRetries {
-			if utils.Logger != nil {
-				utils.Logger.ErrorF("Migration failed after %d attempts, giving up", m.state.RetryCount)
-			}
-			m.state.SetState(StateFailed)
-			return fmt.Errorf("migration failed permanently after %d attempts", m.state.RetryCount)
-		}
-		if utils.Logger != nil {
-			utils.Logger.Info("Resuming migration from state: %s (attempt %d/%d)", m.state.State, m.state.RetryCount+1, config.MigrationMaxRetries)
-		}
-		return m.executeMigration()
-	}
-
-	// If state is Done, don't re-detect v11
-	if m.state.State == StateDone {
-		return nil
-	}
-
-	// Check if v11 is detected
-	version, isV11, err := m.checkVersion()
-	if err != nil {
-		return fmt.Errorf("version check failed: %w", err)
-	}
-
-	if !isV11 {
-		// Nothing to do, still on v10
-		return nil
-	}
-
-	if utils.Logger != nil {
-		utils.Logger.Info("Detected v11 version: %s", version)
-	}
-	m.state.Version = version
-	m.state.RetryCount = 0
-
-	if err := m.state.SetState(StateDetected); err != nil {
-		return fmt.Errorf("failed to update state: %w", err)
-	}
-
-	return m.executeMigration()
+	return versionMajor(served) == 12 && versionMajor(local) == 11
 }
 
-func (m *Migrator) checkVersion() (string, bool, error) {
+func versionMajor(v string) int {
+	parts := strings.SplitN(v, ".", 2)
+	if len(parts) == 0 {
+		return 0
+	}
+	n, _ := strconv.Atoi(parts[0])
+	return n
+}
+
+// localVersion reads the agent's version.json
+func (m *Migrator) localVersion() (string, bool, error) {
 	versionPath := filepath.Join(config.AgentPath(), "version.json")
 
 	data, err := os.ReadFile(versionPath)
@@ -151,273 +103,288 @@ func (m *Migrator) checkVersion() (string, bool, error) {
 	if err := json.Unmarshal(data, &info); err != nil {
 		return "", false, fmt.Errorf("failed to parse version.json: %w", err)
 	}
-
-	// Check if version starts with "11."
-	isV11 := strings.HasPrefix(info.Version, "11.")
-	return info.Version, isV11, nil
+	return info.Version, true, nil
 }
 
-func (m *Migrator) executeMigration() error {
-	var err error
+// servedVersion fetches the panel's version.json over 443.
+func (m *Migrator) servedVersion(ctx context.Context) (string, error) {
+	var info VersionInfo
+	if err := utils.DownloadJSON(config.VersionURL(m.creds), &info, m.creds.Insecure); err != nil {
+		return "", err
+	}
+	return info.Version, nil
+}
 
-	// Read config if not already loaded
-	if m.cfg == nil {
-		m.cfg, err = config.ReadConfig()
-		if err != nil {
-			m.state.SetError(err)
-			return fmt.Errorf("failed to read config: %w", err)
+// agentIDOnPanel reports whether our agent id is already on the destination.
+// Gating the destructive step prevents a phantom registration from breaking
+// the agents import.
+func (m *Migrator) agentIDOnPanel(ctx context.Context, id uint32) (bool, error) {
+	panel, err := NewPanel(m.creds.Server, m.creds.InternalKey, m.creds.Insecure)
+	if err != nil {
+		return false, err
+	}
+	defer panel.Close()
+
+	ids, err := panel.ListAgentIDs(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, a := range ids {
+		if a == id {
+			return true, nil
 		}
 	}
+	return false, nil
+}
 
-	// State machine - resume from current state
-	// The switch matches the CURRENT state, each function does its work and sets the NEXT state
-	for m.state.State != StateDone && m.state.State != StateIdle && m.state.State != StateFailed {
+func (m *Migrator) checkAndMigrate(ctx context.Context) error {
+	if m.state.State == StateFailed || m.state.State == StateDone {
+		return nil
+	}
+
+	// Resuming a half-done migration
+	if m.state.State != StateIdle {
+		if m.state.RetryCount >= config.MigrationMaxRetries {
+			if utils.Logger != nil {
+				utils.Logger.ErrorF("Migration failed after %d attempts, giving up", m.state.RetryCount)
+			}
+			m.state.SetState(StateFailed)
+			return fmt.Errorf("migration failed permanently after %d attempts", m.state.RetryCount)
+		}
+		if m.state.RetryCount > 0 && utils.Logger != nil {
+			utils.Logger.Info("Resuming migration from state: %s (attempt %d/%d)", m.state.State, m.state.RetryCount+1, config.MigrationMaxRetries)
+		}
+		return m.executeMigration(ctx)
+	}
+
+	// Idle: credentials required before anything
+	if m.creds == nil {
+		creds, err := config.ReadCredentials()
+		if err != nil {
+			return fmt.Errorf("credentials not ready: %w (retrying)", err)
+		}
+		m.creds = creds
+	}
+
+	localVer, localOk, err := m.localVersion()
+	if err != nil {
+		return err
+	}
+	if !localOk {
+		if utils.Logger != nil {
+			utils.Logger.Info("No local v11 agent, waiting")
+		}
+		return nil
+	}
+
+	served, err := m.servedVersion(ctx)
+	if err != nil {
+		if utils.Logger != nil {
+			utils.Logger.Info("Served version not reachable yet: %v (waiting)", err)
+		}
+		return nil
+	}
+
+	if !shouldMigrate(served, localVer, true) {
+		return nil
+	}
+
+	if utils.Logger != nil {
+		utils.Logger.Info("Detected v11->v12 (served=%s local=%s)", served, localVer)
+	}
+	m.state.Version = localVer
+	m.state.RetryCount = 0
+
+	agentID, err := config.ReadAgentID()
+	if err != nil {
+		return fmt.Errorf("read agent id: %w", err)
+	}
+	m.state.AgentID = agentID
+	if err := m.state.SetState(StateDetected); err != nil {
+		return err
+	}
+
+	return m.executeMigration(ctx)
+}
+
+func (m *Migrator) executeMigration(ctx context.Context) error {
+	for m.state.State != StateDone && m.state.State != StateFailed {
 		switch m.state.State {
 		case StateDetected:
-			err = m.doStopService() // → StateStopping
-		case StateStopping:
-			err = m.doDownload() // → StateDownloading
-		case StateDownloading:
-			err = m.doCleanDirectory() // → StateCleaning
-		case StateCleaning:
-			err = m.doMigrateConfig() // → StateMigratingConfig
-		case StateMigratingConfig:
-			err = m.doUpdateService() // → StateUpdating
-		case StateUpdating:
-			err = m.doStartService() // → StateStarting
-		case StateStarting:
-			err = m.doHealthCheck() // → StateVerifying
-		case StateVerifying:
-			err = m.doSelfUninstall() // → StateSelfUninstall
-		case StateSelfUninstall:
-			// Self-uninstall spawned, we're done
-			m.state.SetState(StateDone)
-			return nil
-		}
-
-		if err != nil {
-			m.state.SetError(err)
-			// Check if we've exhausted retries
-			if m.state.RetryCount >= config.MigrationMaxRetries {
-				if utils.Logger != nil {
-					utils.Logger.ErrorF("Migration failed permanently after %d attempts: %v", m.state.RetryCount, err)
-				}
-				m.state.SetState(StateFailed)
+			if err := m.doGate(ctx); err != nil {
+				return m.handleStepError(err)
 			}
-			return err
+		case StateUninstalling:
+			if err := m.doUninstall(); err != nil {
+				return m.handleStepError(err)
+			}
+		case StateDownloading:
+			if err := m.doDownload(); err != nil {
+				return m.handleStepError(err)
+			}
+		case StateInstalling:
+			if err := m.doInstall(ctx); err != nil {
+				return m.handleStepError(err)
+			}
+		case StateVerifying:
+			if err := m.doVerify(); err != nil {
+				return m.handleStepError(err)
+			}
+		case StateSelfUninstall:
+			if err := m.doSelfUninstall(); err != nil {
+				return m.handleStepError(err)
+			}
+		default:
+			return fmt.Errorf("unknown state %s", m.state.State)
 		}
 	}
-
 	return nil
 }
 
-func (m *Migrator) doStopService() error {
-	if utils.Logger != nil {
-		utils.Logger.Info("Stopping agent service")
+// handleStepError records the error and decides whether to retry or give up.
+func (m *Migrator) handleStepError(err error) error {
+	m.state.SetError(err)
+	if m.state.RetryCount >= config.MigrationMaxRetries {
+		if utils.Logger != nil {
+			utils.Logger.ErrorF("Migration failed permanently after %d attempts: %v", m.state.RetryCount, err)
+		}
+		m.state.SetState(StateFailed)
 	}
-
-	if err := service.StopAgentService(); err != nil {
-		return fmt.Errorf("failed to stop service: %w", err)
-	}
-
-	return m.state.SetState(StateStopping)
+	return err
 }
 
-func (m *Migrator) doDownload() error {
-	if utils.Logger != nil {
-		utils.Logger.Info("Downloading new agent binary")
-	}
-
-	binaryPath := filepath.Join(config.AgentPath(), config.BinaryName())
-	tempPath := binaryPath + ".new"
-
-	// Download to temp file first
-	if err := utils.Download(m.cfg.DownloadURL(), tempPath, m.cfg.Insecure); err != nil {
-		os.Remove(tempPath)
-		return fmt.Errorf("download failed: %w", err)
-	}
-
-	// Store the temp path for later
-	m.state.BinaryPath = tempPath
-	if err := m.state.Save(); err != nil {
+// doGate blocks the destructive path until our agent id is on the panel.
+// Waiting is not a failure: return nil so the next poll re-checks.
+func (m *Migrator) doGate(ctx context.Context) error {
+	onPanel, err := m.agentIDOnPanel(ctx, m.state.AgentID)
+	if err != nil {
 		if utils.Logger != nil {
-			utils.Logger.ErrorF("Failed to save state with binary path: %v", err)
+			utils.Logger.Info("Gate check failed: %v (retrying)", err)
 		}
+		return err
+	}
+	if !onPanel {
+		if utils.Logger != nil {
+			utils.Logger.Info("Agent %d not on panel yet, waiting for agents import", m.state.AgentID)
+		}
+		return nil // wait, not a failure
+	}
+	if utils.Logger != nil {
+		utils.Logger.Info("Gate passed: agent %d on panel", m.state.AgentID)
+	}
+	return m.state.SetState(StateUninstalling)
+}
+
+// doUninstall extracts preserved files, stops the agent and updater, removes
+// the unit files, and wipes the agent dir.
+func (m *Migrator) doUninstall() error {
+	if utils.Logger != nil {
+		utils.Logger.Info("Uninstalling v11 agent locally")
+	}
+
+	if err := extractForForwarder(); err != nil {
+		if utils.Logger != nil {
+			utils.Logger.ErrorF("Extract forwarder files: %v (continuing)", err)
+		}
+	}
+
+	if err := service.RemoveAgentService(); err != nil {
+		return fmt.Errorf("remove agent service: %w", err)
+	}
+
+	if err := os.RemoveAll(config.AgentPath()); err != nil {
+		return fmt.Errorf("remove agent dir: %w", err)
 	}
 
 	return m.state.SetState(StateDownloading)
 }
 
-func (m *Migrator) doCleanDirectory() error {
+// doDownload fetches the v12 agent binary into the recreated agent dir.
+func (m *Migrator) doDownload() error {
 	if utils.Logger != nil {
-		utils.Logger.Info("Cleaning agent directory")
-	}
-
-	// Remove the v10 logs collector service before cleaning (it uses the beats folder)
-	if err := service.RemoveLogsCollectorService(); err != nil {
-		if utils.Logger != nil {
-			utils.Logger.ErrorF("Failed to remove logs collector service: %v (continuing)", err)
-		}
-		// Continue anyway - best effort
-	}
-
-	agentPath := config.AgentPath()
-	entries, err := os.ReadDir(agentPath)
-	if err != nil {
-		return fmt.Errorf("failed to read agent directory: %w", err)
-	}
-
-	var cleanupErrors []string
-	for _, entry := range entries {
-		name := entry.Name()
-
-		// Skip preserved files
-		if isPreserved(name) {
-			if utils.Logger != nil {
-				utils.Logger.LogF(100, "Preserving: %s", name)
-			}
-			continue
-		}
-
-		// Skip the temp download file
-		if strings.HasSuffix(name, ".new") {
-			continue
-		}
-
-		fullPath := filepath.Join(agentPath, name)
-		if utils.Logger != nil {
-			utils.Logger.LogF(100, "Removing: %s", fullPath)
-		}
-
-		if entry.IsDir() {
-			if err := os.RemoveAll(fullPath); err != nil {
-				errMsg := fmt.Sprintf("failed to remove directory %s: %v", fullPath, err)
-				cleanupErrors = append(cleanupErrors, errMsg)
-				if utils.Logger != nil {
-					utils.Logger.ErrorF("%s", errMsg)
-				}
-			}
-		} else {
-			if err := os.Remove(fullPath); err != nil {
-				errMsg := fmt.Sprintf("failed to remove file %s: %v", fullPath, err)
-				cleanupErrors = append(cleanupErrors, errMsg)
-				if utils.Logger != nil {
-					utils.Logger.ErrorF("%s", errMsg)
-				}
-			}
-		}
-	}
-
-	// Log accumulated errors but don't fail - cleanup is best-effort
-	if len(cleanupErrors) > 0 && utils.Logger != nil {
-		utils.Logger.ErrorF("Cleanup completed with %d errors (non-fatal)", len(cleanupErrors))
-	}
-
-	return m.state.SetState(StateCleaning)
-}
-
-func (m *Migrator) doMigrateConfig() error {
-	if utils.Logger != nil {
-		utils.Logger.Info("Migrating log-collector-config.json from v10 to v11 format")
-	}
-
-	migrated, err := MigrateCollectorConfig()
-	if err != nil {
-		// Config migration failure is not fatal - agent can still work
-		if utils.Logger != nil {
-			utils.Logger.ErrorF("Failed to migrate collector config: %v (continuing)", err)
-		}
-	} else if migrated && utils.Logger != nil {
-		utils.Logger.Info("Collector config migration completed successfully")
-	}
-
-	return m.state.SetState(StateMigratingConfig)
-}
-
-func isPreserved(name string) bool {
-	for _, p := range config.PreservedFiles {
-		if name == p {
-			return true
-		}
-	}
-	return false
-}
-
-func (m *Migrator) doUpdateService() error {
-	if utils.Logger != nil {
-		utils.Logger.Info("Updating service configuration")
+		utils.Logger.Info("Downloading v12 agent binary")
 	}
 
 	binaryPath := filepath.Join(config.AgentPath(), config.BinaryName())
-	tempPath := m.state.BinaryPath
-
-	// Move temp file to final location
-	if tempPath != "" {
-		if err := os.Rename(tempPath, binaryPath); err != nil {
-			// Try copy + delete if rename fails (cross-device)
-			data, readErr := os.ReadFile(tempPath)
-			if readErr != nil {
-				return fmt.Errorf("failed to read temp binary: %w", readErr)
-			}
-			if writeErr := os.WriteFile(binaryPath, data, 0755); writeErr != nil {
-				return fmt.Errorf("failed to write binary: %w", writeErr)
-			}
-			os.Remove(tempPath)
-		}
+	if err := os.MkdirAll(config.AgentPath(), 0755); err != nil {
+		return fmt.Errorf("create agent dir: %w", err)
 	}
-
-	// Set executable permissions on Linux
+	if err := utils.Download(config.BinaryDownloadURL(m.creds), binaryPath, m.creds.Insecure); err != nil {
+		return fmt.Errorf("download: %w", err)
+	}
 	if err := setExecutable(binaryPath); err != nil {
 		if utils.Logger != nil {
-			utils.Logger.ErrorF("Failed to set executable permission: %v", err)
+			utils.Logger.ErrorF("chmod: %v", err)
 		}
-		// Continue anyway, might still work
 	}
 
-	// Update service configuration
-	if err := service.UpdateServiceExecPath(binaryPath); err != nil {
-		return fmt.Errorf("failed to update service: %w", err)
-	}
-
-	return m.state.SetState(StateUpdating)
+	return m.state.SetState(StateInstalling)
 }
 
-func (m *Migrator) doStartService() error {
+// doInstall fetches the connection key and runs the v12 install, which
+// registers the agent and starts the service.
+func (m *Migrator) doInstall(ctx context.Context) error {
 	if utils.Logger != nil {
-		utils.Logger.Info("Starting agent service")
+		utils.Logger.Info("Installing v12 agent (fetching connection key)")
 	}
 
-	if err := service.StartAgentService(); err != nil {
-		return fmt.Errorf("failed to start service: %w", err)
+	panel, err := NewPanel(m.creds.Server, m.creds.InternalKey, m.creds.Insecure)
+	if err != nil {
+		return err
+	}
+	defer panel.Close()
+
+	key, err := panel.GetConnectionKey(ctx)
+	if err != nil {
+		return fmt.Errorf("get connection key: %w", err)
 	}
 
-	return m.state.SetState(StateStarting)
-}
-
-func (m *Migrator) doHealthCheck() error {
-	if utils.Logger != nil {
-		utils.Logger.Info("Performing health check (waiting %v)", config.HealthCheckWait)
+	binaryPath := filepath.Join(config.AgentPath(), config.BinaryName())
+	skip := "no"
+	if m.creds.Insecure {
+		skip = "yes"
 	}
 
-	// Wait for service to stabilize
-	time.Sleep(config.HealthCheckWait)
-
-	if !service.IsAgentServiceRunning() {
-		return fmt.Errorf("agent service is not running after health check")
+	if err := runAgentInstall(binaryPath, m.creds.Server, key, skip); err != nil {
+		return fmt.Errorf("install: %w", err)
 	}
 
-	if utils.Logger != nil {
-		utils.Logger.Info("Health check passed - agent service is running")
-	}
 	return m.state.SetState(StateVerifying)
 }
 
-func (m *Migrator) doSelfUninstall() error {
+// doVerify waits for the service and checks the version.
+func (m *Migrator) doVerify() error {
 	if utils.Logger != nil {
-		utils.Logger.Info("Migration complete, initiating self-uninstall")
+		utils.Logger.Info("Verifying v12 agent (waiting %v)", config.HealthCheckWait)
 	}
 
-	if err := m.state.SetState(StateSelfUninstall); err != nil {
+	time.Sleep(config.HealthCheckWait)
+
+	if !service.IsAgentServiceRunning() {
+		return fmt.Errorf("agent service is not running after install")
+	}
+
+	localVer, localOk, err := m.localVersion()
+	if err != nil {
+		return err
+	}
+	if !localOk || versionMajor(localVer) != 12 {
+		return fmt.Errorf("agent is not on v12 after install (local=%s ok=%v)", localVer, localOk)
+	}
+
+	if utils.Logger != nil {
+		utils.Logger.Info("Verified v12 agent running")
+	}
+	return m.state.SetState(StateSelfUninstall)
+}
+
+// doSelfUninstall removes the bridge service.
+func (m *Migrator) doSelfUninstall() error {
+	if utils.Logger != nil {
+		utils.Logger.Info("Migration complete, self-uninstalling")
+	}
+
+	if err := m.state.SetState(StateDone); err != nil {
 		return err
 	}
 

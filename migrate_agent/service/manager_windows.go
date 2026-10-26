@@ -154,3 +154,41 @@ func removeWindowsService(serviceName string) error {
 	}
 	return nil
 }
+
+// RemoveAgentService performs the local-only uninstall on Windows: stops and
+// deletes the agent and updater services, then drops the legacy logs
+// collectors. It never talks to the panel (no DeleteAgent).
+func RemoveAgentService() error {
+	for _, name := range []string{config.AgentServiceName, config.UpdaterServiceName} {
+		stopWindowsService(name)
+		deleteWindowsService(name)
+	}
+	return RemoveLogsCollectorService()
+}
+
+func stopWindowsService(name string) {
+	if utils.Logger != nil {
+		utils.Logger.Info("Stopping %s service", name)
+	}
+	cmd := exec.Command("sc", "stop", name)
+	if output, err := cmd.CombinedOutput(); err != nil && utils.Logger != nil {
+		utils.Logger.Info("Stop %s: %s (may already be stopped)", name, strings.TrimSpace(string(output)))
+	}
+	time.Sleep(2 * time.Second)
+}
+
+func deleteWindowsService(name string) {
+	cmd := exec.Command("sc", "query", name)
+	if output, err := cmd.CombinedOutput(); err == nil && (strings.Contains(string(output), "does not exist") || strings.Contains(string(output), "1060")) {
+		if utils.Logger != nil {
+			utils.Logger.Info("Service %s does not exist, skipping", name)
+		}
+		return
+	}
+	out, err := exec.Command("sc", "delete", name).CombinedOutput()
+	if err != nil && utils.Logger != nil {
+		utils.Logger.ErrorF("Failed to delete service %s: %s", name, strings.TrimSpace(string(out)))
+	} else if utils.Logger != nil {
+		utils.Logger.Info("Service %s removed successfully", name)
+	}
+}

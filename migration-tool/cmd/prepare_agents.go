@@ -128,7 +128,10 @@ func runPrepareAgents(cmd *cobra.Command, args []string) error {
 	//      - All agents reach a terminal state (success path)
 	//      - Context cancelled (Ctrl+C)
 	//      - AgentManager unreachable for too long (fatal error)
-	orch := prepareagents.NewOrchestrator(prepareagents.Config{}, store, client)
+	orch := prepareagents.NewOrchestrator(prepareagents.Config{
+		DestServer:  deriveBridgeDestServer(cfg),
+		InternalKey: internalKey,
+	}, store, client)
 	runErr := orch.Run(ctx)
 
 	// 8. Print final summary regardless of how the loop exited.
@@ -403,4 +406,15 @@ func showPlanAndConfirm(client *agentmanager.Client, store *prepareagents.Store)
 	}
 
 	return nil
+}
+
+// deriveBridgeDestServer resolves the V12 panel host the bridge will dial over
+// 443 after the upgrade. For a migration (config with an explicit destination)
+// that is the destination; for an in-place upgrade the panel stays on the same
+// host, so the source host is the destination.
+func deriveBridgeDestServer(cfg *domain.MigrationConfig) string {
+	if cfg.Destination.Host != "" {
+		return cfg.Destination.Host
+	}
+	return cfg.Source.Host
 }

@@ -9,9 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/utmstack/MigrationTool/utils"
-
 	"github.com/utmstack/MigrationTool/config"
+	"github.com/utmstack/MigrationTool/utils"
 )
 
 // StopAgentService stops the UTMStack Agent service
@@ -25,7 +24,6 @@ func StopAgentService() error {
 		return fmt.Errorf("failed to stop service: %s: %w", string(output), err)
 	}
 
-	// Wait for service to fully stop
 	deadline := time.Now().Add(config.ServiceStopTimeout)
 	for time.Now().Before(deadline) {
 		if !IsAgentServiceRunning() {
@@ -46,22 +44,11 @@ func StartAgentService() error {
 		utils.Logger.Info("Starting %s service", config.AgentServiceName)
 	}
 
-	// Reload systemd to pick up any service file changes
-	cmd := exec.Command("systemctl", "daemon-reload")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		if utils.Logger != nil {
-			utils.Logger.ErrorF("daemon-reload failed: %s", string(output))
-		}
-		// Continue anyway, may not be needed
-	}
+	exec.Command("systemctl", "daemon-reload").Run()
 
-	cmd = exec.Command("systemctl", "start", config.AgentServiceName)
+	cmd := exec.Command("systemctl", "start", config.AgentServiceName)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to start service: %s: %w", string(output), err)
-	}
-
-	if utils.Logger != nil {
-		utils.Logger.Info("Service start command issued")
 	}
 	return nil
 }
@@ -73,16 +60,45 @@ func IsAgentServiceRunning() bool {
 	return strings.TrimSpace(string(output)) == "active"
 }
 
+// RemoveAgentService performs the local-only uninstall of the v11 agent:
+// stops the agent and updater, disables and removes their unit files, and
+// drops the legacy logs collector. It never talks to the panel (no
+// DeleteAgent), so the migrated agent row stays intact.
+func RemoveAgentService() error {
+	for _, name := range []string{config.AgentServiceName, config.UpdaterServiceName} {
+		stopSystemdService(name)
+	}
+
+	for _, name := range []string{config.AgentServiceName, config.UpdaterServiceName} {
+		unit := fmt.Sprintf("/etc/systemd/system/%s.service", name)
+		if _, err := os.Stat(unit); os.IsNotExist(err) {
+			continue
+		}
+		exec.Command("systemctl", "disable", name).Run()
+		if err := os.Remove(unit); err != nil && !os.IsNotExist(err) && utils.Logger != nil {
+			utils.Logger.ErrorF("Failed to remove unit %s: %v", unit, err)
+		}
+	}
+
+	exec.Command("systemctl", "daemon-reload").Run()
+	return RemoveLogsCollectorService()
+}
+
+func stopSystemdService(name string) {
+	if utils.Logger != nil {
+		utils.Logger.Info("Stopping %s service", name)
+	}
+	cmd := exec.Command("systemctl", "stop", name)
+	if output, err := cmd.CombinedOutput(); err != nil && utils.Logger != nil {
+		utils.Logger.Info("Stop %s: %s (may already be stopped)", name, strings.TrimSpace(string(output)))
+	}
+}
+
 // RemoveLogsCollectorService stops, disables and removes the v10 logs collector service
 func RemoveLogsCollectorService() error {
 	serviceName := config.LogsCollectorServiceName
 	serviceFile := fmt.Sprintf("/etc/systemd/system/%s.service", serviceName)
 
-	if utils.Logger != nil {
-		utils.Logger.Info("Removing %s service", serviceName)
-	}
-
-	// Check if service exists
 	if _, err := os.Stat(serviceFile); os.IsNotExist(err) {
 		if utils.Logger != nil {
 			utils.Logger.Info("Service %s does not exist, skipping", serviceName)
@@ -90,37 +106,12 @@ func RemoveLogsCollectorService() error {
 		return nil
 	}
 
-	// Stop the service (ignore errors - may already be stopped)
-	cmd := exec.Command("systemctl", "stop", serviceName)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		if utils.Logger != nil {
-			utils.Logger.Info("Stop %s: %s (may already be stopped)", serviceName, strings.TrimSpace(string(output)))
-		}
+	stopSystemdService(serviceName)
+	exec.Command("systemctl", "disable", serviceName).Run()
+	if err := os.Remove(serviceFile); err != nil && !os.IsNotExist(err) && utils.Logger != nil {
+		utils.Logger.ErrorF("Failed to remove service file %s: %v", serviceFile, err)
 	}
-
-	// Disable the service (ignore errors)
-	cmd = exec.Command("systemctl", "disable", serviceName)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		if utils.Logger != nil {
-			utils.Logger.Info("Disable %s: %s", serviceName, strings.TrimSpace(string(output)))
-		}
-	}
-
-	// Remove the service file
-	if err := os.Remove(serviceFile); err != nil && !os.IsNotExist(err) {
-		if utils.Logger != nil {
-			utils.Logger.ErrorF("Failed to remove service file %s: %v", serviceFile, err)
-		}
-		// Continue anyway
-	}
-
-	// Reload systemd
-	cmd = exec.Command("systemctl", "daemon-reload")
-	cmd.Run()
-
-	if utils.Logger != nil {
-		utils.Logger.Info("Service %s removed successfully", serviceName)
-	}
+	exec.Command("systemctl", "daemon-reload").Run()
 	return nil
 }
 
@@ -132,13 +123,11 @@ func UpdateServiceExecPath(binaryPath string) error {
 
 	servicePath := config.SystemdServicePath()
 
-	// Read current service file using os.ReadFile (no shell injection risk)
 	content, err := os.ReadFile(servicePath)
 	if err != nil {
 		return fmt.Errorf("failed to read service file: %w", err)
 	}
 
-	// Find and replace ExecStart and ConditionFileIsExecutable lines
 	lines := strings.Split(string(content), "\n")
 	var newLines []string
 	foundExecStart := false
@@ -149,7 +138,6 @@ func UpdateServiceExecPath(binaryPath string) error {
 			newLines = append(newLines, fmt.Sprintf("ExecStart=%s run", binaryPath))
 			foundExecStart = true
 		} else if strings.HasPrefix(trimmed, "ConditionFileIsExecutable=") {
-			// Update ConditionFileIsExecutable to point to the new binary
 			newLines = append(newLines, fmt.Sprintf("ConditionFileIsExecutable=%s", binaryPath))
 		} else {
 			newLines = append(newLines, line)
@@ -160,20 +148,14 @@ func UpdateServiceExecPath(binaryPath string) error {
 		return fmt.Errorf("ExecStart line not found in service file")
 	}
 
-	// Write updated service file using os.WriteFile (no shell injection risk)
 	newContent := strings.Join(newLines, "\n")
 	if err := os.WriteFile(servicePath, []byte(newContent), 0644); err != nil {
 		return fmt.Errorf("failed to write service file: %w", err)
 	}
 
-	// Reload systemd
 	cmd := exec.Command("systemctl", "daemon-reload")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("daemon-reload failed: %s: %w", string(output), err)
-	}
-
-	if utils.Logger != nil {
-		utils.Logger.Info("Service file updated successfully")
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package utils
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -96,4 +97,28 @@ func downloadOnce(url, destPath string, insecure bool) error {
 	}
 
 	return nil
+}
+
+// DownloadJSON fetches a URL and unmarshals the JSON body into out.
+func DownloadJSON(url string, out interface{}, insecure bool) error {
+	transport := &http.Transport{}
+	if insecure {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	client := &http.Client{Transport: transport, Timeout: 30 * time.Second}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		return fmt.Errorf("http request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("http status %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read body: %w", err)
+	}
+	return json.Unmarshal(data, out)
 }

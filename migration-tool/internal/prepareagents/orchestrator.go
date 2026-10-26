@@ -29,6 +29,12 @@ var ErrPermanentFailures = errors.New("prepare-agents finished with permanently 
 type Config struct {
 	DiscoveryInterval time.Duration // default: DefaultDiscoveryInterval
 	DeployConcurrency int           // default: DeployConcurrency
+
+	// Bridge credentials baked into every agent's credentials.yml. DestServer
+	// is the destination V12 panel host; InternalKey is the shared key. When
+	// DestServer is empty the deployer skips writing credentials entirely.
+	DestServer  string
+	InternalKey string
 }
 
 func (c Config) discoveryInterval() time.Duration {
@@ -62,6 +68,7 @@ type Orchestrator struct {
 // NewOrchestrator wires the orchestrator with its collaborators.
 func NewOrchestrator(cfg Config, store *Store, client *agentmanager.Client) *Orchestrator {
 	deployer := agentmanager.NewDeployer(client)
+	deployer.SetCredentials(cfg.DestServer, cfg.InternalKey)
 	return &Orchestrator{
 		cfg:      cfg,
 		store:    store,

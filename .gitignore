@@ -11,7 +11,11 @@ utmstack-migration-*.yml
 
 # Binaries
 /utmstack_migration_tool
-/migrate_agent
+migrate_agent/migrate_agent_*
+
+# Bridge runtime artifacts: state and credentials hold the internal key
+migrate_agent/state.json
+migrate_agent/credentials.yml
 *.exe
 
 # OS
