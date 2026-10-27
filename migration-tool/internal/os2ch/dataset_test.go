@@ -14,7 +14,7 @@ func TestClassifyIndex(t *testing.T) {
 		{"log linux daily", "v11-log-linux-2026-10-11", DatasetLogs, true},
 		{"log other datatype", "v11-log-o365-2026-10-11", DatasetLogs, true},
 		{"alert daily", "v11-alert-2026-10-11", DatasetAlerts, true},
-		{"statistics monthly", "v11-statistics-2026.10", DatasetStatistics, true},
+		{"statistics out of scope", "v11-statistics-2026.10", DatasetUnknown, false},
 		{"backend logs excluded", "v11-backend-logs", DatasetUnknown, false},
 		{"compliance eval excluded", "v11-log-compliance-evaluation", DatasetUnknown, false},
 		{"api access excluded", "v11-api-access-logs-2026.10", DatasetUnknown, false},

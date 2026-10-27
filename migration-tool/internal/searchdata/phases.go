@@ -100,9 +100,10 @@ func (p *Phases) RunStream(ctx context.Context) error {
 		return fmt.Errorf("wait for destination ClickHouse ready: %w", err)
 	}
 	engine, err := os2ch.NewEngine(ctx, os2ch.EngineConfig{
-		OS:  osClient.Config(),
-		CH:  os2ch.CHConfig{HTTPAddr: p.cfg.DestHost + ":8123", User: "default", Password: chPass, Database: "utmstack"},
-		Log: p.log,
+		OS:         osClient.Config(),
+		CH:         os2ch.CHConfig{HTTPAddr: p.cfg.DestHost + ":8123", User: "default", Password: chPass, Database: "utmstack"},
+		Log:        p.log,
+		WindowDays: 7,
 	})
 	if err != nil {
 		return fmt.Errorf("os2ch engine: %w", err)
@@ -131,7 +132,7 @@ func (p *Phases) streamCore(ctx context.Context, engine *os2ch.Engine, stateDir 
 		return fmt.Errorf("stream: %w", err)
 	}
 
-	for _, ds := range []os2ch.Dataset{os2ch.DatasetLogs, os2ch.DatasetAlerts, os2ch.DatasetStatistics} {
+	for _, ds := range []os2ch.Dataset{os2ch.DatasetLogs, os2ch.DatasetAlerts} {
 		vr := engine.VerifyDataset(ctx, ds, int64(sres.PerDataset[ds]), sres.SampleID(ds))
 		switch {
 		case vr.Error != "":
@@ -140,6 +141,13 @@ func (p *Phases) streamCore(ctx context.Context, engine *os2ch.Engine, stateDir 
 		default:
 			ui.Success(fmt.Sprintf("%s verified: %d docs in destination", ds, vr.CHDocs))
 		}
+	}
+	if sres.WindowDays > 0 && len(sres.ExcludedOld) > 0 {
+		msg := fmt.Sprintf("Window active (last %d days): %d index(es) were not migrated.", sres.WindowDays, len(sres.ExcludedOld))
+		if len(sres.ExcludedOld) <= 10 {
+			msg += " Skipped: " + strings.Join(sres.ExcludedOld, ", ")
+		}
+		ui.Info(msg)
 	}
 	os.RemoveAll(stateDir)
 	ui.Success(fmt.Sprintf("Streamed %d documents into ClickHouse (%d skipped)", sres.Total, sres.Skipped))
@@ -177,9 +185,10 @@ func (p *Phases) StreamPhantom(ctx context.Context, apiAddr, osPass string) erro
 		return fmt.Errorf("wait for destination ClickHouse ready: %w", err)
 	}
 	engine, err := os2ch.NewEngine(ctx, os2ch.EngineConfig{
-		OS:  osClient.Config(),
-		CH:  os2ch.CHConfig{HTTPAddr: p.cfg.DestHost + ":8123", User: "default", Password: chPass, Database: "utmstack"},
-		Log: p.log,
+		OS:         osClient.Config(),
+		CH:         os2ch.CHConfig{HTTPAddr: p.cfg.DestHost + ":8123", User: "default", Password: chPass, Database: "utmstack"},
+		Log:        p.log,
+		WindowDays: 7,
 	})
 	if err != nil {
 		return fmt.Errorf("os2ch engine: %w", err)

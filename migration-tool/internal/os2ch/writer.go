@@ -102,8 +102,6 @@ func TableFor(ds Dataset) string {
 		return "utmstack.logs"
 	case DatasetAlerts:
 		return "utmstack.alerts"
-	case DatasetStatistics:
-		return "utmstack.statistics"
 	default:
 		return ""
 	}

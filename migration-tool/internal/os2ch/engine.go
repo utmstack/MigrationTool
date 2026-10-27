@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,7 +17,7 @@ import (
 const (
 	defaultBatch = 5000
 	manifestName = "stream.yaml"
-	dumpWorkers  = 8
+	dumpWorkers  = 10
 	// streamAttempts bounds how many times a single index is re-streamed from
 	// scratch when its scroll dies mid-way (context expired, 5xx that escaped
 	// the client retry). Safe because the insert is atomic: a dead scroll
@@ -38,13 +39,15 @@ type StreamIndex struct {
 
 // Engine copies V11 OpenSearch data into V12 ClickHouse by streaming each
 // index straight into a single atomic insert. A manifest in stateDir makes
-// the run resumable.
+// the run resumable. With a non-zero window, the stream is scoped to indices
+// created in the last windowDays days.
 type Engine struct {
-	os      *OSClient
-	ch      CHClient
-	batch   int
-	log     *slog.Logger
-	onIndex IndexProgress
+	os         *OSClient
+	ch         CHClient
+	batch      int
+	log        *slog.Logger
+	onIndex    IndexProgress
+	windowDays int
 }
 
 // SetIndexProgress attaches a callback invoked once per finished index,
@@ -55,10 +58,11 @@ func (e *Engine) SetIndexProgress(fn IndexProgress) {
 
 // EngineConfig holds connection settings for both ends.
 type EngineConfig struct {
-	OS    OSConfig
-	CH    CHConfig
-	Batch int
-	Log   *slog.Logger
+	OS         OSConfig
+	CH         CHConfig
+	Batch      int
+	Log        *slog.Logger
+	WindowDays int
 }
 
 func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
@@ -71,9 +75,10 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		log = slog.Default()
 	}
 	e := &Engine{
-		os:    NewOSClient(cfg.OS),
-		batch: batch,
-		log:   log,
+		os:         NewOSClient(cfg.OS),
+		batch:      batch,
+		log:        log,
+		windowDays: cfg.WindowDays,
 	}
 	if cfg.CH.HTTPAddr != "" {
 		ch, err := NewCHWriter(ctx, cfg.CH, log)
@@ -114,11 +119,13 @@ func (e *Engine) OSIndices(ctx context.Context) (map[Dataset][]string, []string,
 }
 
 type LoadResult struct {
-	Skipped    int
-	Total      int
-	PerIndex   []StreamIndex
-	PerDataset map[Dataset]int
-	SampleIDs  map[Dataset]string
+	Skipped     int
+	Total       int
+	PerIndex    []StreamIndex
+	PerDataset  map[Dataset]int
+	SampleIDs   map[Dataset]string
+	ExcludedOld []string
+	WindowDays  int
 }
 
 // SampleID returns the first recorded document id for a dataset, used by
@@ -161,15 +168,24 @@ func (e *Engine) StreamAll(ctx context.Context, stateDir string) (*LoadResult, e
 	if err != nil {
 		return nil, err
 	}
-	res := &LoadResult{PerDataset: map[Dataset]int{}, SampleIDs: map[Dataset]string{}}
+	res := &LoadResult{PerDataset: map[Dataset]int{}, SampleIDs: map[Dataset]string{}, WindowDays: e.windowDays}
+	cutoff := time.Now().AddDate(0, 0, -e.windowDays)
 
 	var jobs []job
-	for _, ds := range []Dataset{DatasetLogs, DatasetAlerts, DatasetStatistics} {
+	for _, ds := range []Dataset{DatasetLogs, DatasetAlerts} {
 		sort.Strings(grouped[ds])
 		for _, idx := range grouped[ds] {
 			if done != nil && done[idx] {
 				res.Skipped++
 				continue
+			}
+			// Fail-safe: an in-scope index without a parseable date is always
+			// streamed, so an unknown naming scheme never drops data.
+			if e.windowDays > 0 {
+				if d, ok := indexDate(idx); ok && !d.After(cutoff) {
+					res.ExcludedOld = append(res.ExcludedOld, idx)
+					continue
+				}
 			}
 			jobs = append(jobs, job{ds: ds, idx: idx})
 		}

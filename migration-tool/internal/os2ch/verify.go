@@ -43,8 +43,7 @@ func VerifyOne(ctx context.Context, v verifyer, ds Dataset, osCount int64, sampl
 		return res
 	}
 
-	if sampleID == "" || ds == DatasetStatistics {
-		// Statistics has no id column; the row count is its verification.
+	if sampleID == "" {
 		return res
 	}
 	found, err := v.SamplePresent(ctx, ds, sampleID)
@@ -65,9 +64,6 @@ func (w *CHWriter) SamplePresent(ctx context.Context, ds Dataset, id string) (bo
 	table := TableFor(ds)
 	if table == "" {
 		return false, fmt.Errorf("unknown dataset %q", ds)
-	}
-	if ds == DatasetStatistics {
-		return false, fmt.Errorf("statistics has no id column; sample check not applicable")
 	}
 	body, err := w.httpQuery(ctx, fmt.Sprintf("SELECT count() FROM %s WHERE id = '%s' LIMIT 1", table, strings.ReplaceAll(id, "'", "''")))
 	if err != nil {

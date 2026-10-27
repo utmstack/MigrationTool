@@ -4,10 +4,9 @@ package os2ch
 type Dataset string
 
 const (
-	DatasetLogs       Dataset = "logs"
-	DatasetAlerts     Dataset = "alerts"
-	DatasetStatistics Dataset = "statistics"
-	DatasetUnknown    Dataset = ""
+	DatasetLogs    Dataset = "logs"
+	DatasetAlerts  Dataset = "alerts"
+	DatasetUnknown Dataset = ""
 )
 
 // DefaultTenantID is the V12 tenant every migrated row is written under.
@@ -15,9 +14,10 @@ const (
 // id; foreign tenantIds seen in V11 data are normalised to it.
 const DefaultTenantID = "ce66672c-e36d-4761-a8c8-90058fee1a24"
 
-// ClassifyIndex maps a V11 index name to its ClickHouse dataset. Only tenant
-// data sets are migrated; backend and compliance-evaluation indices are
-// derived/operational stores without a V12 destination.
+// ClassifyIndex maps a V11 index name to its ClickHouse dataset. Only logs
+// and alerts are tenant data sets with a V12 destination; statistics, backend
+// and compliance-evaluation indices are derived/operational stores that are
+// not migrated.
 func ClassifyIndex(index string) (Dataset, bool) {
 	switch {
 	case index == "":
@@ -27,7 +27,7 @@ func ClassifyIndex(index string) (Dataset, bool) {
 	case index == "v11-log-compliance-evaluation":
 		return DatasetUnknown, false
 	case hasPrefix(index, "v11-statistics-"):
-		return DatasetStatistics, true
+		return DatasetUnknown, false
 	case hasPrefix(index, "v11-alert-"):
 		return DatasetAlerts, true
 	case hasPrefix(index, "v11-log-"):

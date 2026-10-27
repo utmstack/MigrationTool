@@ -41,8 +41,8 @@ func TestCHWriterHTTPQueries(t *testing.T) {
 		t.Fatal("expected sample id found")
 	}
 
-	// Statistics rejects sample lookups (no id column).
-	if _, err := w.SamplePresent(ctx, DatasetStatistics, "x"); err == nil {
-		t.Fatal("expected statistics sample lookup to error")
+	// Statistics is out of scope: the writer no longer knows a statistics table.
+	if got := TableFor(DatasetUnknown); got != "" {
+		t.Errorf("TableFor(unknown) = %q, want empty", got)
 	}
 }

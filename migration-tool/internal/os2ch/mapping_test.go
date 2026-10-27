@@ -48,32 +48,6 @@ func TestMapLogDocumentWithoutEvent(t *testing.T) {
 	}
 }
 
-func TestMapStatisticsInjectsTenant(t *testing.T) {
-	in := map[string]interface{}{
-		"@timestamp": "2026-10-09T17:57:47Z",
-		"type":       "enqueue_success",
-		"dataType":   "linux",
-		"dataSource": "v11",
-		"count":      float64(25),
-	}
-	out := MapDocument(DatasetStatistics, in)
-	if out["tenantId"] != DefaultTenantID {
-		t.Errorf("tenantId = %v, want %s", out["tenantId"], DefaultTenantID)
-	}
-	// Existing fields are not clobbered.
-	if out["count"] != float64(25) || out["type"] != "enqueue_success" {
-		t.Errorf("existing statistics fields must survive: %v", out)
-	}
-}
-
-func TestMapStatisticsNormalisesForeignTenant(t *testing.T) {
-	in := map[string]interface{}{"@timestamp": "t", "tenantId": "custom-tenant"}
-	out := MapDocument(DatasetStatistics, in)
-	if out["tenantId"] != DefaultTenantID {
-		t.Errorf("foreign tenantId must be normalised, got %v", out["tenantId"])
-	}
-}
-
 func TestMapAlertsNormalisesTenantAndAddsLastUpdate(t *testing.T) {
 	in := map[string]interface{}{"id": "a1", "name": "alert", "severity": "high", "@timestamp": "2026-10-12T08:00:00Z"}
 	out := MapDocument(DatasetAlerts, in)
