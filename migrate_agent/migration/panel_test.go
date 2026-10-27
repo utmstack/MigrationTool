@@ -2,8 +2,16 @@ package migration
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
 	"net"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -128,6 +136,89 @@ func TestNewPanelRejectsEmpty(t *testing.T) {
 	if _, err := NewPanel("host", "", false); err == nil {
 		t.Error("expected error for empty internal key")
 	}
+}
+
+// newSelfSignedCert returns a TLS certificate usable for an ALPN test server.
+func newSelfSignedCert(t *testing.T) tls.Certificate {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		DNSNames:     []string{"localhost"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: priv}
+}
+
+// newH2OnlyTLSListener accepts TLS only when the client advertises h2, which
+// is what the nginx frontend requires for gRPC over 443.
+func newH2OnlyTLSListener(t *testing.T) net.Listener {
+	t.Helper()
+	cert := newSelfSignedCert(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tln := tls.NewListener(ln, &tls.Config{Certificates: []tls.Certificate{cert}, NextProtos: []string{"h2"}})
+	t.Cleanup(func() { _ = tln.Close() })
+	return tln
+}
+
+// assertNegotiatesH2 creates a panel over the h2-only listener, fires an RPC
+// so gRPC actually dials, and asserts the TLS handshake negotiated h2. The RPC
+// itself errors (the listener does not speak gRPC); that is expected and
+// ignored.
+func assertNegotiatesH2(t *testing.T, ln net.Listener, insecure bool) {
+	t.Helper()
+
+	p, err := NewPanel(ln.Addr().String(), "key", insecure)
+	if err != nil {
+		t.Fatalf("NewPanel: %v", err)
+	}
+	defer p.Close()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, _ = p.ListAgentIDs(ctx)
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for an h2 TLS connection")
+		}
+		raw, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		sc, ok := raw.(*tls.Conn)
+		if !ok {
+			t.Fatal("accepted conn is not *tls.Conn")
+		}
+		// tls.NewListener leaves the handshake to be driven explicitly, so
+		// complete it then read the negotiated protocol.
+		if err := sc.HandshakeContext(context.Background()); err != nil {
+			continue
+		}
+		if got := sc.ConnectionState().NegotiatedProtocol; got != "h2" {
+			t.Fatalf("negotiated %q, want h2", got)
+		}
+		return
+	}
+}
+
+func TestNewPanelInsecureNegotiatesH2(t *testing.T) {
+	assertNegotiatesH2(t, newH2OnlyTLSListener(t), true)
 }
 
 func TestEnabledListenersTCPWinsAndTLS(t *testing.T) {

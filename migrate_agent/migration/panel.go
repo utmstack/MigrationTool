@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
 	pb "github.com/utmstack/MigrationTool/grpc/pb"
@@ -47,10 +46,18 @@ func NewPanel(server, internalKey string, insecureTLS bool) (Panel, error) {
 	}
 
 	var creds grpc.DialOption
+	// Both modes need h2 in ALPN: the panel serves gRPC behind nginx over 443.
+	// insecure.NewCredentials() omits NextProtos, so the TLS handshake would
+	// negotiate http/1.1 and gRPC would fail reading the server preface.
 	if insecureTLS {
-		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
+		creds = grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{
+			InsecureSkipVerify: true,
+			NextProtos:         []string{"h2"},
+		}))
 	} else {
-		creds = grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{}))
+		creds = grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{
+			NextProtos: []string{"h2"},
+		}))
 	}
 
 	target := server
