@@ -1,6 +1,6 @@
 # UTMStack Migration Tool — Guía del operador
 
-Esta guía te lleva paso a paso por la migración de una instalación UTMStack V10 a V11.
+Esta guía te lleva paso a paso por la migración de una instalación UTMStack V11 a V12.
 
 > **Buscás la versión en inglés (la que ven los clientes)?** Está en [`USER_GUIDE.md`](USER_GUIDE.md).
 
@@ -10,15 +10,16 @@ Esta guía te lleva paso a paso por la migración de una instalación UTMStack V
 
 Necesitás:
 
-- Una instalación de **UTMStack V10** funcionando
+- Una instalación de **UTMStack V11** funcionando
 - Un servidor Linux (Ubuntu, Debian o similar)
 - Acceso **`sudo` / root** en ese servidor
 - Acceso a Internet (la herramienta descarga el agente de migración desde Google Cloud Storage)
+- Para migraciones servidor a servidor: una **instalación V12 ya corriendo** en el destino (mirá `migrate` más abajo)
 
 También conviene tener claro:
 
 - Si vas a hacer un upgrade **en el mismo servidor** (in-place) o si vas a **mover todo a un servidor nuevo** (dos servidores)
-- La IP y las credenciales SSH del servidor V10 (solo si corrés la herramienta desde otra máquina)
+- La IP y las credenciales SSH del servidor V11 (solo si corrés la herramienta desde otra máquina)
 
 ---
 
@@ -55,8 +56,10 @@ sudo ./utmstack_migration_tool upgrade
 
 **Primero `prepare-agents`, después `upgrade`.** El `upgrade` chequea que
 `prepare-agents` haya corrido y se niega a arrancar si no encuentra evidencia.
-Es a propósito: evita que los agentes queden huérfanos en V10 después de que
-el backend pase a V11.
+Es a propósito: evita que los agentes queden huérfanos en V11 después de que
+el backend pase a V12.
+
+Si no tenés agentes, pasale `--skip-agent-check` a `upgrade` o `migrate`.
 
 ---
 
@@ -68,9 +71,13 @@ Antes de hacer el upgrade del backend, cada agente UTMStack tiene que recibir
 el binario `migrate_agent`. Este comando se encarga de eso y guarda su progreso,
 así podés cortarlo (Ctrl+C) y retomarlo más tarde sin perder lo hecho.
 
+Los agentes usan `migrate_agent` para actualizarse solos del agente V11 al
+agente V12 después del upgrade del backend, y para instalar el forwarder V12
+cuando lo necesitan los puertos del forwarder que tenés habilitados.
+
 #### Cómo ejecutarlo
 
-En el mismo servidor V10 (no hace falta archivo de config):
+En el mismo servidor V11 (no hace falta archivo de config):
 
 ```bash
 sudo ./utmstack_migration_tool prepare-agents
@@ -88,6 +95,7 @@ sudo ./utmstack_migration_tool prepare-agents --config config.yaml
 |------|-------------|---------|
 | `--config`, `-c` | Path al archivo de configuración. Obligatorio en remoto. | (ninguno) |
 | `--db-path` | Path al archivo SQLite de estado. | `./agents-migration.db` |
+| `--yes`, `-y` | No interactivo: no pregunta la confirmación del skip al hacer Ctrl+C. | `false` |
 
 #### Qué vas a ver
 
@@ -132,14 +140,14 @@ Volvé a correr el mismo comando desde el mismo directorio. El archivo SQLite
 
 ---
 
-### `upgrade` — Upgrade in-place V10 → V11
+### `upgrade` — Upgrade in-place V11 → V12
 
 Este comando hace el upgrade del backend en el mismo servidor. Es **destructivo**:
-V10 se elimina y V11 se instala en su lugar. No hay rollback automático.
+V11 se elimina y V12 se instala en su lugar. No hay rollback automático.
 
 #### Cómo ejecutarlo
 
-En el servidor V10 (recomendado, no hace falta config):
+En el servidor V11 (recomendado, no hace falta config):
 
 ```bash
 sudo ./utmstack_migration_tool upgrade
@@ -156,18 +164,33 @@ sudo ./utmstack_migration_tool upgrade --config config.yaml
 | Flag | Descripción | Default |
 |------|-------------|---------|
 | `--config`, `-c` | Path al archivo de configuración. Opcional para upgrade local. | (ninguno) |
+| `--data-file` | Nombre custom para el archivo de backup temporal. | `utmstack-upgrade-YYYYMMDD-HHMMSS.yml` |
+| `--with-data` | Streamiea además los logs y alertas de los **últimos 7 días** desde el volumen de OpenSearch preservado al ClickHouse de V12. Sin esto, esa data de búsqueda se pierde. | `false` |
 | `--skip-agent-check` | Skipea la verificación de `prepare-agents`. **Cuidado.** | `false` |
 
 #### Qué hace
 
-1. Te pide confirmación de la operación destructiva (tenés que tipear `Yes`)
+1. Te pide confirmación de la operación destructiva (tenés que tipear `yes`)
 2. Verifica que `agents-migration.db` exista (prueba de que `prepare-agents` corrió)
-3. Abre el puerto de la base de datos
-4. Exporta toda la configuración de V10 a un archivo de backup
-5. Elimina la instalación de V10
-6. Descarga e instala UTMStack V11
-7. Reimporta los datos en V11
-8. Cierra el puerto de la base de datos
+3. Exporta toda la configuración de V11 a un archivo de backup
+4. Elimina la instalación de V11
+5. Descarga e instala UTMStack V12
+6. Reimporta los datos en V12
+7. Streamiea los últimos 7 días de logs y alertas desde el volumen de OpenSearch preservado al ClickHouse nuevo (solo con `--with-data`)
+
+Toda la corrida queda chequeada en `migration-state.json`: si se corta a mitad
+(un step que falla, un reboot), volvés a correr el mismo comando y retoma desde
+el último step completado, en vez de empezar de cero. Una corrida exitosa borra
+el archivo.
+
+#### Sobre `--with-data`
+
+V11 guarda sus datos de búsqueda en OpenSearch; V12 usa ClickHouse, y el upgrade
+elimina OpenSearch. Sin `--with-data`, todos los logs y alertas anteriores a la
+migración se pierden. Con el flag, la herramienta preserva el volumen de
+OpenSearch durante la eliminación de V11, y una vez instalado V12 streamea los
+logs y alertas de los últimos 7 días al ClickHouse nuevo y verifica las
+cantidades de filas en el destino antes de dar por hecho el step.
 
 #### Sobre `--skip-agent-check`
 
@@ -176,15 +199,20 @@ directorio actual. Es un seguro para que no te olvides de preparar los agentes.
 
 Si tenés una razón legítima para skipearlo (entorno de test, no hay agentes,
 agentes desplegados por otra vía), pasá `--skip-agent-check`. Cualquier agente
-que no haya recibido el `migrate_agent` va a quedar en V10 y se va a desconectar
+que no haya recibido el `migrate_agent` va a quedar en V11 y se va a desconectar
 después del upgrade.
 
 ---
 
-### `migrate` — Mover V10 a un servidor V11 nuevo
+### `migrate` — Mover V11 a un servidor V12 nuevo
 
 Usá este cuando querés mover de un servidor a otro distinto (por ejemplo,
-hardware nuevo). El V10 source queda intacto hasta que la migración termine.
+hardware nuevo). El V11 source queda intacto hasta que la migración termine.
+
+> **Importante — instalá V12 en el destino primero.**
+> Este comando **no** instala V12. El destino tiene que ser una instancia V12
+> ya funcionando (stack Docker arriba, `utmstack_postgres` corriendo) antes de
+> lanzar `migrate`. La herramienta solo lleva la data.
 
 #### Cómo ejecutarlo
 
@@ -197,27 +225,35 @@ sudo ./utmstack_migration_tool migrate --config config.yaml
 | Flag | Descripción | Default |
 |------|-------------|---------|
 | `--config`, `-c` | Path al archivo de configuración. **Obligatorio.** | (ninguno) |
+| `--data-file` | Nombre custom para el archivo de datos. | `utmstack-migration-YYYYMMDD-HHMMSS.yml` |
+| `--with-data` | Streamiea además los logs y alertas de los **últimos 7 días** desde el OpenSearch de V11 al ClickHouse de V12. | `false` |
+| `--skip-agent-check` | Skipea la verificación de `prepare-agents`. **Cuidado.** | `false` |
 
-El archivo de config tiene que tener `source` (V10) y `destination` (V11).
+El archivo de config tiene que tener `source` (V11) y `destination` (V12).
 Mirá [Archivo de configuración](#archivo-de-configuración) más abajo.
 
 #### Qué hace
 
-1. Conecta al servidor V10 source por SSH
-2. Exporta todos los datos de V10 a un archivo YAML
-3. Conecta al servidor V11 destination por SSH
-4. Importa los datos en V11
-5. Sincroniza la clave de seguridad entre ambos servidores
-6. Te pregunta si querés borrar el archivo temporal de datos
+1. Conecta al servidor V11 source por SSH
+2. Exporta todos los datos de V11 a un archivo YAML
+3. Conecta al servidor V12 destination por SSH
+4. Importa los datos en V12
+5. Sincroniza la clave de seguridad al destino (archivo de credenciales, env del compose y el pipeline del events-engine)
+6. Streamiea los últimos 7 días de logs y alertas al ClickHouse de V12 (solo con `--with-data`)
+7. Te pregunta si querés borrar el archivo temporal de datos
+
+Como `upgrade`, la corrida queda chequeada en `migration-state.json` y retoma
+desde el último step completado si se corta a mitad.
 
 ---
 
-### `export` — Guardar datos de V10 a un archivo
+### `export` — Guardar datos de V11 a un archivo
 
-Guarda los datos de V10 en un YAML que podés conservar. Va de la mano de `import`.
+Guarda los datos de V11 en un YAML que podés conservar. Va de la mano de `import`.
 
 ```bash
 sudo ./utmstack_migration_tool export --config config.yaml
+sudo ./utmstack_migration_tool export --config config.yaml --output mi-backup.yml
 ```
 
 | Flag | Descripción | Default |
@@ -227,9 +263,9 @@ sudo ./utmstack_migration_tool export --config config.yaml
 
 ---
 
-### `import` — Cargar un archivo guardado en V11
+### `import` — Cargar un archivo guardado en V12
 
-Lee un YAML producido por `export` y mete su contenido en un servidor V11.
+Lee un YAML producido por `export` y mete su contenido en un servidor V12.
 
 ```bash
 sudo ./utmstack_migration_tool import --config config.yaml --input mi-backup.yml
@@ -246,7 +282,7 @@ sudo ./utmstack_migration_tool import --config config.yaml --input mi-backup.yml
 
 El archivo de config es YAML. La forma cambia según el comando:
 
-- Para **`upgrade`** corriendo localmente en el V10: no hace falta archivo.
+- Para **`upgrade`** corriendo localmente en el V11: no hace falta archivo.
 - Para **`upgrade`** / **`prepare-agents`** / **`export`** en remoto: solo `source`.
 - Para **`migrate`** / **`import`**: hace falta `destination` (y `source` para `migrate`).
 
@@ -254,7 +290,7 @@ El archivo de config es YAML. La forma cambia según el comando:
 
 ```yaml
 source:
-  host: "192.168.1.100"          # IP o hostname del servidor V10
+  host: "192.168.1.100"          # IP o hostname del servidor V11
   ssh_user: "utmstack"           # Usuario SSH
   ssh_password: "tu-ssh-pass"    # Password SSH
   # ssh_private_key: "/home/yo/.ssh/id_rsa"   # Alternativa a ssh_password
@@ -272,6 +308,7 @@ destination:
   host: "192.168.1.200"
   ssh_user: "utmstack"
   ssh_password: "ssh-pass-destination"
+  # integrations_config_dir: "/utmstack/events-engine-workdir/pipeline"   # opcional
 ```
 
 ### Todos los campos disponibles
@@ -290,6 +327,7 @@ source:
 
 destination:
   # Mismos campos que source. Lo usan migrate e import.
+  integrations_config_dir: ""   # Dónde V12 lee los YAML de integraciones migrados (default: /utmstack/events-engine-workdir/pipeline)
 ```
 
 > **Tip:** en general solo necesitás `host`, `ssh_user` y o bien `ssh_password`
@@ -301,18 +339,18 @@ destination:
 
 ### Workflow 1 — Upgrade local in-place (el más simple)
 
-Estás sentado en el servidor V10 y querés actualizarlo a V11 ahí mismo.
+Estás sentado en el servidor V11 y querés actualizarlo a V12 ahí mismo.
 
 ```bash
-ssh utmstack@servidor-v10
+ssh utmstack@servidor-v11
 sudo ./utmstack_migration_tool prepare-agents
 # esperá a que se desplieguen todos los agentes (o Ctrl+C y aceptás skip)
-sudo ./utmstack_migration_tool upgrade
+sudo ./utmstack_migration_tool upgrade --with-data
 ```
 
 ### Workflow 2 — Upgrade remoto in-place
 
-Manejás el servidor V10 desde otra máquina.
+Manejás el servidor V11 desde otra máquina.
 
 ```bash
 cat > config.yaml <<EOF
@@ -323,33 +361,33 @@ source:
 EOF
 
 sudo ./utmstack_migration_tool prepare-agents --config config.yaml
-sudo ./utmstack_migration_tool upgrade --config config.yaml
+sudo ./utmstack_migration_tool upgrade --config config.yaml --with-data
 ```
 
 ### Workflow 3 — Mover a un servidor nuevo
 
-Tenés un V11 limpio y querés llevarte los datos del V10 sin tocarlo.
+Tenés un **V12** limpio y querés llevarte los datos del V11 sin tocarlo.
 
 ```bash
 cat > config.yaml <<EOF
 source:
   host: "192.168.1.100"
   ssh_user: "utmstack"
-  ssh_password: "v10-ssh-pass"
+  ssh_password: "v11-ssh-pass"
 
 destination:
   host: "192.168.1.200"
   ssh_user: "utmstack"
-  ssh_password: "v11-ssh-pass"
+  ssh_password: "v12-ssh-pass"
 EOF
 
 sudo ./utmstack_migration_tool prepare-agents --config config.yaml
-sudo ./utmstack_migration_tool migrate --config config.yaml
+sudo ./utmstack_migration_tool migrate --config config.yaml --with-data
 ```
 
 ### Workflow 4 — Exportar ahora, importar después
 
-Cuando querés hacer un backup del V10 e importar los datos más adelante (o a varios V11).
+Cuando querés hacer un backup del V11 e importar los datos más adelante (o a varios V12).
 
 ```bash
 # Export
@@ -357,9 +395,25 @@ sudo ./utmstack_migration_tool export --config config.yaml --output backup.yml
 
 # (Movés backup.yml a donde necesites, lo revisás, etc.)
 
-# Import del lado del V11
+# Import del lado del V12
 sudo ./utmstack_migration_tool import --config config.yaml --input backup.yml
 ```
+
+---
+
+## Qué migra, qué no
+
+**Migra:** usuarios y roles, configuración de aplicación, los valores de
+integraciones que configuraste (escritos como YAML de V12), agentes y
+collectors, tag rules e incidentes (con sus alertas vinculadas, historial y
+notas), la clave de conexión de agentes, y la clave de encriptación interna.
+Con `--with-data`, los últimos 7 días de logs y alertas se streamian al
+ClickHouse de V12.
+
+**No migra** (V12 los provee o los rediscovera): data de búsqueda más vieja
+que 7 días, statistics, el catálogo de integraciones, dashboards y
+visualizations, assets y resultados de scans, correlation rules y logstash
+filters, e incident response / SOAR.
 
 ---
 
@@ -368,7 +422,7 @@ sudo ./utmstack_migration_tool import --config config.yaml --input backup.yml
 ### "permission denied" leyendo `/root/utmstack.yml` o `/root/compose.yml`
 
 Tenés que correr la herramienta con `sudo`. Los archivos de configuración viven
-en `/root/` en UTMStack V10, y solo root los puede leer.
+en `/root/` en UTMStack V11, y solo root los puede leer.
 
 ```bash
 sudo ./utmstack_migration_tool prepare-agents
@@ -386,9 +440,9 @@ Opciones:
 
 ### "AgentManager unreachable after 5 consecutive failures"
 
-La herramienta no llega al servicio AgentManager del servidor V10. Verificá:
+La herramienta no llega al servicio AgentManager del servidor V11. Verificá:
 
-- Que el servidor V10 esté arriba y `docker service ls` muestre `utmstack_agentmanager` corriendo
+- Que el servidor V11 esté arriba y `docker service ls` muestre `utmstack_agentmanager` corriendo
 - Que el puerto `9000` sea alcanzable desde donde corrés la herramienta
 - Que la `internal_key` en `/root/utmstack.yml` no haya sido modificada a mano
 
@@ -425,7 +479,14 @@ o detrás de una red inalcanzable. Tenés dos opciones:
 
 La herramienta usa `ON CONFLICT DO UPDATE`, así que reejecutar el import es
 seguro — no duplica datos. Arreglá el problema de fondo (por ejemplo, una
-constraint en V11) y volvé a correr `import`.
+constraint en V12) y volvé a correr `import`.
+
+### Después de `migrate`, el destino sigue mostrando credenciales de integraciones viejas
+
+Los plugins del events-engine cachean la clave interna en memoria al arrancar.
+La herramienta hace re-deploy del stack del destino al final del key sync
+exactamente por eso; si ese step se skipió o falló, reiniciá el stack del
+destino a mano.
 
 ---
 
@@ -433,10 +494,11 @@ constraint en V11) y volvé a correr `import`.
 
 | Archivo | Lo crea | Para qué sirve |
 |---------|---------|----------------|
-| `agents-migration.db` | `prepare-agents` | Lleva el track de qué agentes ya recibieron el agente de migración. Conservalo hasta que termine `upgrade`. |
-| `utmstack-upgrade-<timestamp>.yml` | `upgrade` | Backup temporal de los datos de V10. La herramienta lo reusa durante el upgrade. |
+| `agents-migration.db` | `prepare-agents` | Lleva el track de qué agentes ya recibieron el agente de migración. Conservalo hasta que termine `upgrade`/`migrate`. |
+| `utmstack-upgrade-<timestamp>.yml` | `upgrade` | Backup temporal de los datos de V11. La herramienta lo reusa durante el upgrade. |
 | `utmstack-migration-<timestamp>.yml` | `migrate` | Archivo de datos temporal. Te va a preguntar si lo borrás al final. |
-| `utmstack-export-<timestamp>.yml` | `export` | Tu dump de los datos de V10. Conservalo el tiempo que necesites. |
+| `utmstack-export-<timestamp>.yml` | `export` | Tu dump de los datos de V11. Conservalo el tiempo que necesites. |
+| `migration-state.json` | `upgrade` / `migrate` | Checkpoint de los steps completados. Se borra solo al terminar; borralo a mano si querés forzar un restart desde cero. |
 
 ---
 

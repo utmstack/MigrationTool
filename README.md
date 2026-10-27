@@ -74,12 +74,14 @@ Then run:
 ```bash
 sudo ./utmstack_migration_tool prepare-agents --config config.yaml
 sudo ./utmstack_migration_tool upgrade --config config.yaml            # config, users, integrations, agents
-sudo ./utmstack_migration_tool upgrade --config config.yaml --with-data  # + logs, alerts, statistics
+sudo ./utmstack_migration_tool upgrade --config config.yaml --with-data  # + last 7 days of logs and alerts
 ```
 
 `--with-data` is optional. Without it the search data is **not** moved — in an
-upgrade OpenSearch is removed, so that data is lost. The flag streams the
-data into the new ClickHouse before the old stack comes down.
+upgrade OpenSearch is removed, so that data is lost. With it, the tool
+preserves the OpenSearch volume during the upgrade and streams the tenant's
+logs and alerts from the **last 7 days** into the new ClickHouse once V12 is
+installed.
 
 Same idea as Mode A, but the tool reaches the V11 server over SSH.
 
@@ -108,9 +110,6 @@ destination:
   host: "192.168.1.200"          # your new V12 server
   ssh_user: "utmstack"
   ssh_password: "v12-ssh-password"
-  # where V12 reads the migrated integration YAMLs (optional — the
-  # default is /utmstack/events-engine-workdir/pipeline)
-  # integrations_config_dir: "/utmstack/events-engine-workdir/pipeline"
 ```
 
 Then run:
@@ -118,18 +117,13 @@ Then run:
 ```bash
 sudo ./utmstack_migration_tool prepare-agents --config config.yaml
 sudo ./utmstack_migration_tool migrate --config config.yaml            # config, users, integrations, agents
-sudo ./utmstack_migration_tool migrate --config config.yaml --with-data  # + logs, alerts, statistics
+sudo ./utmstack_migration_tool migrate --config config.yaml --with-data  # + last 7 days of logs and alerts
 ```
 
-The tool exports from V11, imports into the existing V12, and copies the
+The tool exports from V11, imports into the existing V12, and syncs the
 security key over so all encrypted values stay decryptable. V11 is left
-untouched. After it finishes, restart the V12 stack so it picks up the
-imported data:
-
-```bash
-ssh utmstack@your-v12-server
-sudo docker stack deploy -c compose.yml utmstack
-```
+untouched. You'll be asked at the end whether to delete the exported data
+file — keeping it lets you retry the import.
 
 ---
 
@@ -157,30 +151,34 @@ Both commands read the same `config.yaml` as the modes above: `export` uses
 |------|-------|
 | Users and roles | Password hashes are copied verbatim — logins keep working. |
 | Application configuration | Copied verbatim; the security key travels with it, so stored passwords stay decryptable. |
-| Integration configurations | Only the values you configured, written to V12 YAML files under the destination's `integrations_config_dir`. V12 ships the integration catalog itself. |
+| Integration configurations | Only the values you configured, written to V12 YAML files on the destination. V12 ships the integration catalog itself. |
 | Agents and collectors | Re-registered on the destination so they keep working. |
-| Tag rules and incidents | Alert tags, tag rules (tag references are remapped to the new V12 tag IDs), and incidents with their linked alerts, history and notes. Incident statuses and severities are converted from the V11 codes to the V12 labels, and all rows are normalised to the V12 default tenant. |
+| Tag rules and incidents | Alert tags, tag rules, and incidents with their linked alerts, history and notes. Statuses and severities are converted to the V12 format. |
 | Agent connection key | Copied over, so existing agents keep enrolling without re-provisioning. |
-| Internal encryption key | Written to the destination's `/root/utmstack.yml`, to the live `compose.yml` (`ENCRYPTION_KEY`/`INTERNAL_KEY` on each affected service), and to the events-engine pipeline YAML the plugins read. A `docker stack deploy` propagates the compose env, and the event-processor services are force-updated afterwards so they reload the key cached from the pipeline YAML — without that, the V12 plugin would keep using the old key and V11-encrypted credentials would not decrypt. No-op if the destination already carries the same key. |
-| Search data (logs, alerts, statistics) | With `--with-data`, OpenSearch tenant data streams straight into the V12 ClickHouse — no intermediate file. Migrated rows are normalised to the V12 default tenant, since V11 had no multi-tenancy. |
+| Internal encryption key | Synced to the destination (credential file, compose env, and the events-engine pipeline), so V11-encrypted credentials keep decrypting. |
+| Search data | With `--with-data`, only the **last 7 days** of logs and alerts stream from OpenSearch into the V12 ClickHouse. No intermediate file, and the run is verifiable: row counts are checked on the destination before it's declared done. |
 
 ## Not migrated
 
 These are intentionally left behind — V12 provides or re-discovers them:
 
+- **Older search data** — logs and alerts older than 7 days stay on the V11 server
+- **Statistics** — V12 regenerates them from the logs it receives
 - The **integration catalog** (V12 seeds it itself)
-- **Dashboards and visualizations** (V12 provisions them from its filesystem)
+- **Dashboards and visualizations** (V12 provisions them)
 - **Assets, data sources, and network-scan results** (re-discovered by V12 scans)
-- **Correlation rules and logstash filters** (V12 provisions them from its filesystem)
+- **Correlation rules and logstash filters** (V12 provisions them)
 - **Incident response / SOAR** (playbooks, actions, commands, jobs — V12 has no equivalent yet)
 
 ---
 
 ## A few things to know
 
-- **Always run `prepare-agents` first.** The `upgrade` and `migrate` commands
-  refuse to start without it — that's on purpose, so your agents don't get
-  left behind on V11.
+- **Run `prepare-agents` first if you have agents.** It installs a small
+  migration agent on every endpoint so they can be upgraded to V12 (and their
+  forwarder installed) after the migration. `upgrade` and `migrate` refuse to
+  start without it — that's on purpose, so your agents don't get left behind.
+  If you have no endpoints, pass `--skip-agent-check` to those commands.
 - **`upgrade` is destructive.** V11 is removed and replaced by V12. There's no
   automatic rollback.
 - **Offline agents?** During `prepare-agents` you can press **Ctrl+C** and
@@ -190,9 +188,8 @@ These are intentionally left behind — V12 provides or re-discovers them:
   again — it picks up where it left off. The same applies to `migrate` and
   `upgrade`: they keep a `migration-state.json` checkpoint next to the
   running tool, so re-running the same command after a failure skips the
-  steps that already completed (including the destructive V11 cleanup and
-  the V12 install) and resumes from where it stopped. A successful run
-  deletes the checkpoint file.
+  steps that already completed and resumes from where it stopped. A
+  successful run deletes the checkpoint file.
 - **PostgreSQL credentials are auto-detected** from `compose.yml` when you
   don't set `password` — the only required config fields are `host`,
   `ssh_user`, and `ssh_password` or `ssh_private_key`.
@@ -207,7 +204,7 @@ A few things that can trip you up after a migration:
 
 When the migration finishes, open the panel in your browser. If it never gets
 past the **"Welcome to UTMStack"** loading screen, restart the frontend
-container:
+service:
 
 ```bash
 sudo docker service update --force utmstack_frontend
