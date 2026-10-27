@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/kardianos/service"
 	"github.com/spf13/cobra"
@@ -10,6 +11,30 @@ import (
 	"github.com/utmstack/MigrationTool/config"
 	svc "github.com/utmstack/MigrationTool/service"
 )
+
+// The parent migrator is already stopped by the time this child runs: systemd
+// kills the whole unit cgroup on stop, so a child Stop() call would terminate
+// itself before Uninstall() executes. Only wait for the unit to leave.
+type unitStatuser interface {
+	Status() (service.Status, error)
+}
+
+func waitUnitGone(s unitStatuser, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		status, err := s.Status()
+		if err != nil {
+			return err
+		}
+		if status == service.StatusStopped {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("unit still not stopped after %v", timeout)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
 
 var uninstallCmd = &cobra.Command{
 	Use:   "uninstall",
@@ -22,8 +47,9 @@ var uninstallCmd = &cobra.Command{
 			return fmt.Errorf("failed to create service: %w", err)
 		}
 
-		// Stop service first (ignore errors, may not be running)
-		_ = s.Stop()
+		if err := waitUnitGone(s, 20*time.Second); err != nil {
+			return fmt.Errorf("wait unit stopped: %w", err)
+		}
 
 		err = s.Uninstall()
 		if err != nil {

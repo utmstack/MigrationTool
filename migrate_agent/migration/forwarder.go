@@ -17,6 +17,7 @@ import (
 const (
 	forwarderRegisterTimeout = 5 * time.Minute
 	forwarderRegisterPoll    = 2 * time.Second
+	forwarderApplyTimeout    = 2 * time.Minute
 )
 
 // tlsCertPreserves maps the V11 agent cert files to the names the V12
@@ -125,10 +126,19 @@ func (m *Migrator) forwarderEnable(ctx context.Context, listeners []ListenerPort
 	reported := make([]string, 0, len(listeners))
 	for _, l := range listeners {
 		if eerr := panel.SetIntegration(ctx, collectorID, l.DataType, listenerConfKeys(l)); eerr != nil {
-			if utils.Logger != nil {
-				utils.Logger.ErrorF("Enable %s: %v (continuing)", l.DataType, eerr)
+			// An offline collector still gets its row persisted by the panel;
+			// the forwarder applies it on its next resync. Verify that before
+			// treating this as a failure.
+			if aerr := m.waitForIntegrationApplied(ctx, panel, collectorID, l.DataType); aerr != nil {
+				if utils.Logger != nil {
+					utils.Logger.ErrorF("Enable %s: %v (continuing)", l.DataType, eerr)
+				}
+				reported = append(reported, fmt.Sprintf("%s %s %s: %v", l.DataType, l.Proto, l.Port, aerr))
+				continue
 			}
-			reported = append(reported, fmt.Sprintf("%s %s %s: %v", l.DataType, l.Proto, l.Port, eerr))
+			if utils.Logger != nil {
+				utils.Logger.Info("%s applied after forwarder reconnect", l.DataType)
+			}
 			continue
 		}
 		if configured, status, lastError, serr := panel.IntegrationState(ctx, collectorID, l.DataType); serr != nil {
@@ -153,6 +163,36 @@ func (m *Migrator) forwarderEnable(ctx context.Context, listeners []ListenerPort
 		}
 	}
 	return nil
+}
+
+// waitForIntegrationApplied polls the persisted config row until the forwarder
+// applies it. Sent/Pending means the row is persisted but not yet acked, so it
+// keeps waiting; Acked is success; Failed/absent is an error.
+func (m *Migrator) waitForIntegrationApplied(ctx context.Context, panel Panel, collectorID uint32, dataType string) error {
+	deadline := time.Now().Add(forwarderApplyTimeout)
+	for {
+		configured, status, lastError, err := panel.IntegrationState(ctx, collectorID, dataType)
+		if err == nil {
+			switch {
+			case configured && status == "Acked":
+				return nil
+			case !configured || status == "Failed":
+				msg := lastError
+				if msg == "" {
+					msg = fmt.Sprintf("state=%s", status)
+				}
+				return fmt.Errorf("%s: %s", dataType, msg)
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s: not applied within %v (last state %q)", dataType, forwarderApplyTimeout, status)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(forwarderRegisterPoll):
+		}
+	}
 }
 
 // waitForForwarder polls ListCollector until the forwarder for this host has

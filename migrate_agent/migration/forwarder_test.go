@@ -4,22 +4,25 @@ import (
 	"context"
 	"net"
 	"os"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
+	"github.com/utmstack/MigrationTool/config"
 	pb "github.com/utmstack/MigrationTool/grpc/pb"
 )
 
 // fakeCollectorServer implements the CollectorService surface the bridge calls.
 type fakeCollectorServer struct {
 	pb.UnimplementedCollectorServiceServer
-	rows       []*pb.Collector
-	accepted   string
-	lastConfig *pb.CollectorConfig
-	lastState  *pb.IntegrationStateResponse
+	rows          []*pb.Collector
+	accepted      string
+	lastConfig    *pb.CollectorConfig
+	lastState     *pb.IntegrationStateResponse
+	stateSequence []*pb.IntegrationStateResponse
 }
 
 func (f *fakeCollectorServer) ListCollector(ctx context.Context, in *pb.ListRequest) (*pb.ListCollectorResponse, error) {
@@ -32,6 +35,11 @@ func (f *fakeCollectorServer) SetCollectorConfig(ctx context.Context, in *pb.Col
 }
 
 func (f *fakeCollectorServer) GetCollectorIntegrationState(ctx context.Context, in *pb.IntegrationStateRequest) (*pb.IntegrationStateResponse, error) {
+	if len(f.stateSequence) > 0 {
+		next := f.stateSequence[0]
+		f.stateSequence = f.stateSequence[1:]
+		return next, nil
+	}
 	return f.lastState, nil
 }
 
@@ -137,5 +145,45 @@ func TestIntegrationState(t *testing.T) {
 	}
 	if !configured || status != "accepted" || lastErr != "" {
 		t.Errorf("got configured=%v status=%q lastErr=%q, want true accepted ''", configured, status, lastErr)
+	}
+}
+
+func TestWaitForIntegrationAppliedPendingThenAcked(t *testing.T) {
+	c := &fakeCollectorServer{stateSequence: []*pb.IntegrationStateResponse{
+		{Configured: true, ConfigStatus: "Pending"},
+		{Configured: true, ConfigStatus: "Sent"},
+		{Configured: true, ConfigStatus: "Acked"},
+	}}
+	client := dialForwarder(t, c)
+	m := &Migrator{state: &StateFile{}, creds: &config.Credentials{}}
+
+	if err := m.waitForIntegrationApplied(context.Background(), client, 9, "ciscoasa"); err != nil {
+		t.Fatalf("expected ack after pending/sent, got %v", err)
+	}
+}
+
+func TestWaitForIntegrationAppliedFailed(t *testing.T) {
+	c := &fakeCollectorServer{lastState: &pb.IntegrationStateResponse{
+		Configured: true, ConfigStatus: "Failed", LastError: "TLS certificates not found",
+	}}
+	client := dialForwarder(t, c)
+	m := &Migrator{state: &StateFile{}, creds: &config.Credentials{}}
+
+	err := m.waitForIntegrationApplied(context.Background(), client, 9, "ciscoasa")
+	if err == nil {
+		t.Fatal("expected error for Failed state, got nil")
+	}
+	if !strings.Contains(err.Error(), "TLS certificates not found") {
+		t.Errorf("error %q should carry the last_error", err)
+	}
+}
+
+func TestWaitForIntegrationAppliedNotConfigured(t *testing.T) {
+	c := &fakeCollectorServer{lastState: &pb.IntegrationStateResponse{Configured: false}}
+	client := dialForwarder(t, c)
+	m := &Migrator{state: &StateFile{}, creds: &config.Credentials{}}
+
+	if err := m.waitForIntegrationApplied(context.Background(), client, 9, "ciscoasa"); err == nil {
+		t.Fatal("expected error when row never appeared, got nil")
 	}
 }
