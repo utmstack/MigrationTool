@@ -112,8 +112,9 @@ func GetDownloadCommand(info PlatformInfo) string {
 	path := GetMigrateAgentPath(info)
 
 	if info.IsWindows {
+		// Paths contain a space (Program Files); cmd.exe splits unquoted args.
 		return fmt.Sprintf(
-			`mkdir %s 2>nul & curl.exe -sSL -o %s %s`,
+			`mkdir "%s" 2>nul & curl.exe -sSL -o "%s" "%s"`,
 			migrateAgentDirWindows, path, url,
 		)
 	}
@@ -130,7 +131,7 @@ func GetVerifyDownloadCommand(info PlatformInfo) string {
 	path := GetMigrateAgentPath(info)
 
 	if info.IsWindows {
-		return fmt.Sprintf(`if exist %s (echo OK) else (echo ERROR: File not found)`, path)
+		return fmt.Sprintf(`if exist "%s" (echo OK) else (echo ERROR: File not found)`, path)
 	}
 
 	return fmt.Sprintf(`if [ -f '%s' ]; then echo "OK"; else echo "ERROR: File not found"; fi`, path)
@@ -143,7 +144,7 @@ func GetInstallCommand(info PlatformInfo) string {
 	path := GetMigrateAgentPath(info)
 
 	if info.IsWindows {
-		return fmt.Sprintf(`%s install`, path)
+		return fmt.Sprintf(`"%s" install`, path)
 	}
 
 	return fmt.Sprintf(`'%s' install`, path)
@@ -189,7 +190,7 @@ func GetWriteCredentialsCommand(info PlatformInfo, base64Content string) string 
 		b64Path := dir + `\credentials.yml.b64`
 		outPath := dir + `\credentials.yml`
 		return fmt.Sprintf(
-			`if not exist %s mkdir %s & echo %s > %s & certutil -decode %s %s`,
+			`if not exist "%s" mkdir "%s" & echo %s > "%s" & certutil -decode "%s" "%s"`,
 			dir, dir, base64Content, b64Path, b64Path, outPath,
 		)
 	}
@@ -204,7 +205,7 @@ func GetWriteCredentialsCommand(info PlatformInfo, base64Content string) string 
 func GetVerifyCredentialsCommand(info PlatformInfo) string {
 	dir := MigrateAgentCredentialsDir(info)
 	if info.IsWindows {
-		return fmt.Sprintf(`if exist %s\credentials.yml (echo OK) else (echo ERROR: File not found)`, dir)
+		return fmt.Sprintf(`if exist "%s\credentials.yml" (echo OK) else (echo ERROR: File not found)`, dir)
 	}
 	return fmt.Sprintf(`if [ -f '%s/credentials.yml' ]; then echo "OK"; else echo "ERROR: File not found"; fi`, dir)
 }

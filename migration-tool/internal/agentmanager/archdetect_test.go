@@ -26,13 +26,13 @@ func TestParseArchitectureFromOutput(t *testing.T) {
 		out  string
 		want string
 	}{
-		{`AMD64`, "amd64"},                    // @echo %PROCESSOR_ARCHITECTURE% (Windows)
-		{`ARM64`, "arm64"},                    // Windows on ARM
-		{`64-BIT WINDOWS`, "amd64"},           // wmic legacy output
-		{`OSArchitecture=64-bit`, "amd64"},    // wmic legacy output
-		{`x86_64`, "amd64"},                   // uname
-		{`aarch64`, "arm64"},                  // uname
-		{``, "amd64"},                         // default
+		{`AMD64`, "amd64"},                 // @echo %PROCESSOR_ARCHITECTURE% (Windows)
+		{`ARM64`, "arm64"},                 // Windows on ARM
+		{`64-BIT WINDOWS`, "amd64"},        // wmic legacy output
+		{`OSArchitecture=64-bit`, "amd64"}, // wmic legacy output
+		{`x86_64`, "amd64"},                // uname
+		{`aarch64`, "arm64"},               // uname
+		{``, "amd64"},                      // default
 	}
 	for _, c := range cases {
 		if got := ParseArchitectureFromOutput(c.out); got != c.want {

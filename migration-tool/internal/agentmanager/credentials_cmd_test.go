@@ -21,7 +21,7 @@ func TestGetWriteCredentialsCommand(t *testing.T) {
 		{
 			name: "windows decodes via certutil",
 			info: PlatformInfo{OS: "windows", Architecture: "amd64", IsWindows: true},
-			want: `if not exist C:\Program Files\UTMStack\Migration mkdir C:\Program Files\UTMStack\Migration & echo ` + b64 + ` > C:\Program Files\UTMStack\Migration\credentials.yml.b64 & certutil -decode C:\Program Files\UTMStack\Migration\credentials.yml.b64 C:\Program Files\UTMStack\Migration\credentials.yml`,
+			want: `if not exist "C:\Program Files\UTMStack\Migration" mkdir "C:\Program Files\UTMStack\Migration" & echo ` + b64 + ` > "C:\Program Files\UTMStack\Migration\credentials.yml.b64" & certutil -decode "C:\Program Files\UTMStack\Migration\credentials.yml.b64" "C:\Program Files\UTMStack\Migration\credentials.yml"`,
 		},
 		{
 			name: "darwin decodes into migration dir",
@@ -53,7 +53,7 @@ func TestGetVerifyCredentialsCommand(t *testing.T) {
 		{
 			name: "windows exist check",
 			info: PlatformInfo{OS: "windows", IsWindows: true},
-			want: `if exist C:\Program Files\UTMStack\Migration\credentials.yml (echo OK) else (echo ERROR: File not found)`,
+			want: `if exist "C:\Program Files\UTMStack\Migration\credentials.yml" (echo OK) else (echo ERROR: File not found)`,
 		},
 	}
 
