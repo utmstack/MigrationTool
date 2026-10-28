@@ -12,8 +12,11 @@ const (
 	// Service installation directories. Must match
 	// migrate_agent/config.MigrationPath() per platform (binary, state and
 	// credentials.yml co-locate); the tool delivers, the bridge owns the dir.
-	migrateAgentDirUnix    = "/opt/utmstack-migration"
-	migrateAgentDirWindows = `C:\Program Files\UTMStack\Migration`
+	migrateAgentDirUnix = "/opt/utmstack-migration"
+	// Space-free on purpose: the V11 agent hands commands to `cmd.exe /C`,
+	// which strips quotes around paths with spaces. C:\UTMStack\Migration
+	// stays one token unquoted.
+	migrateAgentDirWindows = `C:\UTMStack\Migration`
 )
 
 type PlatformInfo struct {
@@ -112,9 +115,10 @@ func GetDownloadCommand(info PlatformInfo) string {
 	path := GetMigrateAgentPath(info)
 
 	if info.IsWindows {
-		// Paths contain a space (Program Files); cmd.exe splits unquoted args.
+		// No quotes: the path has no spaces and a quoted path passed through
+		// `cmd.exe /C` gets quote-stripped and mangled.
 		return fmt.Sprintf(
-			`mkdir "%s" 2>nul & curl.exe -sSL -o "%s" "%s"`,
+			`mkdir %s 2>nul & curl.exe -sSL -o %s %s`,
 			migrateAgentDirWindows, path, url,
 		)
 	}
@@ -131,7 +135,7 @@ func GetVerifyDownloadCommand(info PlatformInfo) string {
 	path := GetMigrateAgentPath(info)
 
 	if info.IsWindows {
-		return fmt.Sprintf(`if exist "%s" (echo OK) else (echo ERROR: File not found)`, path)
+		return fmt.Sprintf(`if exist %s (echo OK) else (echo ERROR: File not found)`, path)
 	}
 
 	return fmt.Sprintf(`if [ -f '%s' ]; then echo "OK"; else echo "ERROR: File not found"; fi`, path)
@@ -144,7 +148,7 @@ func GetInstallCommand(info PlatformInfo) string {
 	path := GetMigrateAgentPath(info)
 
 	if info.IsWindows {
-		return fmt.Sprintf(`"%s" install`, path)
+		return fmt.Sprintf(`%s install`, path)
 	}
 
 	return fmt.Sprintf(`'%s' install`, path)
@@ -174,7 +178,7 @@ func GetVerifyInstallCommand(info PlatformInfo) string {
 // it here.
 func MigrateAgentCredentialsDir(info PlatformInfo) string {
 	if info.IsWindows {
-		return `C:\Program Files\UTMStack\Migration`
+		return `C:\UTMStack\Migration`
 	}
 	return "/opt/utmstack-migration"
 }
@@ -183,15 +187,18 @@ func MigrateAgentCredentialsDir(info PlatformInfo) string {
 // credentials file into the bridge's migration directory. base64 keeps the
 // internal key out of shell quoting, and single-line form matches how the
 // agent's command runner executes other migrate_agent commands. The directory
-// is created (idempotent) so the file is in place before the bridge starts.
+// already exists: the download step creates it and later steps verify it.
 func GetWriteCredentialsCommand(info PlatformInfo, base64Content string) string {
 	dir := MigrateAgentCredentialsDir(info)
 	if info.IsWindows {
 		b64Path := dir + `\credentials.yml.b64`
 		outPath := dir + `\credentials.yml`
+		// No `if not exist ... mkdir ...` prefix: cmd treats everything after
+		// `if` (including `&` chains) as the conditional body, so when the dir
+		// already exists the echo and certutil would silently never run.
 		return fmt.Sprintf(
-			`if not exist "%s" mkdir "%s" & echo %s > "%s" & certutil -decode "%s" "%s"`,
-			dir, dir, base64Content, b64Path, b64Path, outPath,
+			`echo %s > %s & certutil -decode %s %s`,
+			base64Content, b64Path, b64Path, outPath,
 		)
 	}
 	return fmt.Sprintf(
@@ -205,7 +212,7 @@ func GetWriteCredentialsCommand(info PlatformInfo, base64Content string) string 
 func GetVerifyCredentialsCommand(info PlatformInfo) string {
 	dir := MigrateAgentCredentialsDir(info)
 	if info.IsWindows {
-		return fmt.Sprintf(`if exist "%s\credentials.yml" (echo OK) else (echo ERROR: File not found)`, dir)
+		return fmt.Sprintf(`if exist %s\credentials.yml (echo OK) else (echo ERROR: File not found)`, dir)
 	}
 	return fmt.Sprintf(`if [ -f '%s/credentials.yml' ]; then echo "OK"; else echo "ERROR: File not found"; fi`, dir)
 }

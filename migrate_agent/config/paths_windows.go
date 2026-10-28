@@ -21,19 +21,21 @@ func BinaryName() string {
 	}
 }
 
-// MigrationPath returns the migration service installation directory
+// MigrationPath returns the migration service installation directory.
+// Space-free on purpose: the V11 agent hands commands to `cmd.exe /C`,
+// which strips quotes around paths with spaces (Program Files).
 func MigrationPath() string {
-	return `C:\Program Files\UTMStack\Migration\`
+	return `C:\UTMStack\Migration\`
 }
 
 // MigrationLogPath returns the migration service log directory
 func MigrationLogPath() string {
-	return `C:\Program Files\UTMStack\Migration\logs\`
+	return `C:\UTMStack\Migration\logs\`
 }
 
 // MigrationStatePath returns the path to the migration state file
 func MigrationStatePath() string {
-	return `C:\Program Files\UTMStack\Migration\state.json`
+	return `C:\UTMStack\Migration\state.json`
 }
 
 // SystemdServicePath returns empty on Windows (not used)

@@ -2,13 +2,11 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/kardianos/service"
 	"github.com/spf13/cobra"
 
-	"github.com/utmstack/MigrationTool/config"
 	svc "github.com/utmstack/MigrationTool/service"
 )
 
@@ -47,6 +45,17 @@ var uninstallCmd = &cobra.Command{
 			return fmt.Errorf("failed to create service: %w", err)
 		}
 
+		// On Linux move the child out of the unit cgroup first: systemd stop
+		// SIGTERMs the whole cgroup, which would kill this child before
+		// Uninstall() and the directory cleanup run.
+		detachFromUnitCgroup()
+
+		// Stop the service. On Windows the child is a separate process, so this
+		// safely stops the parent service (the parent process exits when the
+		// service main loop ends). On Linux the child was spawned with Setsid,
+		// so it survives the unit stop; if it already ran, ignore the error.
+		_ = s.Stop()
+
 		if err := waitUnitGone(s, 20*time.Second); err != nil {
 			return fmt.Errorf("wait unit stopped: %w", err)
 		}
@@ -58,21 +67,7 @@ var uninstallCmd = &cobra.Command{
 
 		fmt.Println("Migration service uninstalled successfully")
 
-		// Clean up migration directory and logs
-		migrationDir := config.MigrationPath()
-		logDir := config.MigrationLogPath()
-
-		if err := os.RemoveAll(logDir); err != nil {
-			fmt.Printf("Warning: failed to remove log directory %s: %v\n", logDir, err)
-		} else {
-			fmt.Printf("Removed log directory: %s\n", logDir)
-		}
-
-		if err := os.RemoveAll(migrationDir); err != nil {
-			fmt.Printf("Warning: failed to remove migration directory %s: %v\n", migrationDir, err)
-		} else {
-			fmt.Printf("Removed migration directory: %s\n", migrationDir)
-		}
+		postCleanup()
 
 		return nil
 	},
