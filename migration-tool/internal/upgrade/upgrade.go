@@ -230,6 +230,12 @@ func (u *Upgrader) RunUpgrade() error {
 		ui.Error(fmt.Sprintf("Import failed: %v", err))
 		return err
 	}
+	
+	// The import inserts agent rows with their V11 keys, but the V12
+	// agent-manager process started before they existed and keeps an in-memory
+	// key cache. Rotation is manual: the final summary tells the operator to
+	// restart the service (or the instance) so imported agents can
+	// authenticate.
 
 	// Load the V11 OpenSearch tenant data into the V12 ClickHouse. The
 	// cleanup preserved /utmstack/opensearch; a transient OpenSearch node
@@ -275,6 +281,7 @@ func (u *Upgrader) RunUpgrade() error {
 	}
 
 	ui.NextSteps([]string{
+		"Restart the agent-manager service (or the whole instance) so imported agents authenticate: docker service update --force utmstack_agentmanager",
 		"Verify services are running: docker service ls",
 		"Test the V12 instance",
 	})

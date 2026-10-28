@@ -308,3 +308,21 @@ func extractInternalKey(content []byte) (string, error) {
 
 	return strings.TrimSpace(key), nil
 }
+
+// extractMainServer returns the panel address other hosts use to reach this
+// instance (main_server in utmstack.yml). It is the value the bridge
+// credentials need for in-place upgrades, where the auto-detected source host
+// is only 127.0.0.1.
+func ExtractMainServer(content []byte) (string, error) {
+	var config map[string]any
+	if err := yaml.Unmarshal(content, &config); err != nil {
+		return "", fmt.Errorf("failed to parse YAML: %w", err)
+	}
+
+	s, ok := config["main_server"].(string)
+	if !ok || strings.TrimSpace(s) == "" {
+		return "", fmt.Errorf("main_server not found in utmstack.yml")
+	}
+
+	return strings.TrimSpace(s), nil
+}

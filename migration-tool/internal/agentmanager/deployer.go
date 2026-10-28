@@ -59,6 +59,17 @@ func (d *Deployer) SetCredentials(destServer, internalKey string) {
 	d.internalKey = internalKey
 }
 
+// BridgeCredentialsYAML renders the credentials.yml the bridge reads. The
+// panel serves its self-signed certificate on 443, so insecure is always
+// required: without it the bridge's version.json polling fails TLS
+// verification before the migration can start.
+func BridgeCredentialsYAML(destServer, internalKey string) string {
+	return fmt.Sprintf(
+		"server: '%s'\ninternal_key: '%s'\ninsecure: true\n",
+		destServer, internalKey,
+	)
+}
+
 func (d *Deployer) DeployToAgent(ctx context.Context, agent *Agent) *DeployResult {
 	startTime := time.Now()
 	result := &DeployResult{
@@ -200,10 +211,7 @@ func (d *Deployer) DeployToAgent(ctx context.Context, agent *Agent) *DeployResul
 	// Step 6: write credentials.yml for the bridge. Skipped when no
 	// destination server was bound via SetCredentials.
 	if d.destServer != "" {
-		credsYAML := fmt.Sprintf(
-			"server: '%s'\ninternal_key: '%s'\n",
-			d.destServer, d.internalKey,
-		)
+		credsYAML := BridgeCredentialsYAML(d.destServer, d.internalKey)
 		credsB64 := base64.StdEncoding.EncodeToString([]byte(credsYAML))
 
 		writeCredsResult, err := d.client.ExecuteCommand(

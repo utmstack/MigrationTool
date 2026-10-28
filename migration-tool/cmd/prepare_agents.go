@@ -129,8 +129,20 @@ func runPrepareAgents(cmd *cobra.Command, args []string) error {
 	//      - All agents reach a terminal state (success path)
 	//      - Context cancelled (Ctrl+C)
 	//      - AgentManager unreachable for too long (fatal error)
+	var mainServerYAML []byte
+	if isLocal {
+		// Re-read utmstack.yml for main_server; the in-place auto-detected source
+		// host is 127.0.0.1, which remote agents cannot dial.
+		if data, err := os.ReadFile(config.UTMStackYMLPath); err == nil {
+			mainServerYAML = data
+		}
+	}
+	destServer, destFallback := deriveBridgeDestServer(cfg, mainServerYAML, isLocal)
+	if destFallback {
+		ui.Warning(fmt.Sprintf("Could not resolve main_server from %s; using source host %s for bridge credentials. Remote agents will only reach the panel if it is on that address.", config.UTMStackYMLPath, destServer))
+	}
 	orch := prepareagents.NewOrchestrator(prepareagents.Config{
-		DestServer:  deriveBridgeDestServer(cfg),
+		DestServer:  destServer,
 		InternalKey: internalKey,
 	}, store, client)
 	runErr := orch.Run(ctx)
@@ -422,11 +434,22 @@ func showPlanAndConfirm(client *agentmanager.Client, store *prepareagents.Store)
 
 // deriveBridgeDestServer resolves the V12 panel host the bridge will dial over
 // 443 after the upgrade. For a migration (config with an explicit destination)
-// that is the destination; for an in-place upgrade the panel stays on the same
-// host, so the source host is the destination.
-func deriveBridgeDestServer(cfg *domain.MigrationConfig) string {
+// that is the destination. For an in-place upgrade the panel stays on the same
+// host, but the auto-detected source host is 127.0.0.1 — unusable by remote
+// agents — so the main_server from utmstack.yml (the panel's LAN address) is
+// preferred. mainServerYAML is nil for remote runs, which fall back to the
+// source host. fallback reports whether the returned server came from the
+// source host rather than an explicit destination or main_server.
+func deriveBridgeDestServer(cfg *domain.MigrationConfig, mainServerYAML []byte, isLocal bool) (string, bool) {
 	if cfg.Destination.Host != "" {
-		return cfg.Destination.Host
+		return cfg.Destination.Host, false
 	}
-	return cfg.Source.Host
+	if isLocal && len(mainServerYAML) > 0 {
+		if s, err := config.ExtractMainServer(mainServerYAML); err == nil && s != "" {
+			return s, false
+		}
+	}
+	// On a local in-place run the source host is 127.0.0.1 and cannot be
+	// dialed by remote agents; elsewhere it is a real LAN address.
+	return cfg.Source.Host, isLocal
 }
