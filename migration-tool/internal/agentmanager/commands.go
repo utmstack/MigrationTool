@@ -68,7 +68,9 @@ func ParseArchitectureFromOutput(output string) string {
 
 func GetArchDetectCommand(info PlatformInfo) string {
 	if info.IsWindows {
-		return `wmic os get osarchitecture /value`
+		// PROCESSOR_ARCHITECTURE exists on every Windows version; wmic was
+		// removed in Windows 11 23H2+.
+		return `@echo %PROCESSOR_ARCHITECTURE%`
 	}
 	return `uname -m`
 }
