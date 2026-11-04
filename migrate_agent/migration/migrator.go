@@ -115,28 +115,6 @@ func (m *Migrator) servedVersion(ctx context.Context) (string, error) {
 	return info.Version, nil
 }
 
-// agentIDOnPanel reports whether our agent id is already on the destination.
-// Gating the destructive step prevents a phantom registration from breaking
-// the agents import.
-func (m *Migrator) agentIDOnPanel(ctx context.Context, id uint32) (bool, error) {
-	panel, err := NewPanel(m.creds.Server, m.creds.InternalKey, m.creds.Insecure)
-	if err != nil {
-		return false, err
-	}
-	defer panel.Close()
-
-	ids, err := panel.ListAgentIDs(ctx)
-	if err != nil {
-		return false, err
-	}
-	for _, a := range ids {
-		if a == id {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 func (m *Migrator) checkAndMigrate(ctx context.Context) error {
 	if m.state.State == StateFailed || m.state.State == StateDone {
 		return nil
@@ -194,13 +172,7 @@ func (m *Migrator) checkAndMigrate(ctx context.Context) error {
 	}
 	m.state.Version = localVer
 	m.state.RetryCount = 0
-
-	agentID, err := config.ReadAgentID()
-	if err != nil {
-		return fmt.Errorf("read agent id: %w", err)
-	}
-	m.state.AgentID = agentID
-	if err := m.state.SetState(StateDetected); err != nil {
+	if err := m.state.SetState(StateUninstalling); err != nil {
 		return err
 	}
 
@@ -211,9 +183,9 @@ func (m *Migrator) executeMigration(ctx context.Context) error {
 	for m.state.State != StateDone && m.state.State != StateFailed {
 		switch m.state.State {
 		case StateDetected:
-			if err := m.doGate(ctx); err != nil {
-				return m.handleStepError(err)
-			}
+			// Legacy state from bridge versions that waited on the agents
+			// import; it is a no-op now, fall through to the destructive step.
+			return m.state.SetState(StateUninstalling)
 		case StateUninstalling:
 			if err := m.doUninstall(); err != nil {
 				return m.handleStepError(err)
@@ -255,28 +227,6 @@ func (m *Migrator) handleStepError(err error) error {
 		m.state.SetState(StateFailed)
 	}
 	return err
-}
-
-// doGate blocks the destructive path until our agent id is on the panel.
-// Waiting is not a failure: return nil so the next poll re-checks.
-func (m *Migrator) doGate(ctx context.Context) error {
-	onPanel, err := m.agentIDOnPanel(ctx, m.state.AgentID)
-	if err != nil {
-		if utils.Logger != nil {
-			utils.Logger.Info("Gate check failed: %v (retrying)", err)
-		}
-		return err
-	}
-	if !onPanel {
-		if utils.Logger != nil {
-			utils.Logger.Info("Agent %d not on panel yet, waiting for agents import", m.state.AgentID)
-		}
-		return nil // wait, not a failure
-	}
-	if utils.Logger != nil {
-		utils.Logger.Info("Gate passed: agent %d on panel", m.state.AgentID)
-	}
-	return m.state.SetState(StateUninstalling)
 }
 
 // doUninstall extracts preserved files, stops the agent and updater, removes
