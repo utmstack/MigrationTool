@@ -26,12 +26,11 @@ func GetDefaultMigrationTables() []DatabaseSource {
 				"utm_incident_note",
 			},
 		},
+		// Kept so the agentmanager database is opened during import: the
+		// federation converter writes connection_keys into it.
 		{
 			Database: AgentManagerDatabase,
-			Tables: []string{
-				"agents",
-				"collectors",
-			},
+			Tables:   []string{},
 		},
 	}
 }
