@@ -19,7 +19,7 @@ import (
 const (
 	// V12 releases are GitHub prereleases, so 'releases/latest' resolves to a
 	// V11 tag. Pin the exact V12 the migration targets.
-	V12ReleaseTag        = "v12.0.0"
+	V12ReleaseTag        = "v12.0.1"
 	InstallerURL         = "https://github.com/utmstack/UTMStack/releases/download/" + V12ReleaseTag + "/installer"
 	SSHReconnectAttempts = 30
 	SSHReconnectDelay    = 10 * time.Second
