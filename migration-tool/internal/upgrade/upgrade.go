@@ -281,7 +281,6 @@ func (u *Upgrader) RunUpgrade() error {
 	}
 
 	ui.NextSteps([]string{
-		"Restart the agent-manager service (or the whole instance) so imported agents authenticate: docker service update --force utmstack_agentmanager",
 		"Verify services are running: docker service ls",
 		"Test the V12 instance",
 	})
