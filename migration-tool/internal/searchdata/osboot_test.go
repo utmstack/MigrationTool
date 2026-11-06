@@ -92,7 +92,7 @@ func TestPhantomBootPullsAndRuns(t *testing.T) {
 		"docker ps -a -q --filter name=^utmstack_migration_os$",
 		"docker image inspect ghcr.io/utmstack/utmstack/opensearch:latest >/dev/null 2>&1",
 		"docker pull ghcr.io/utmstack/utmstack/opensearch:latest",
-		"docker run -d --name utmstack_migration_os -p 9200:9200 -v /utmstack/opensearch/data:/usr/share/opensearch/data -e cluster.name=utmstack -e node.name=node1 -e discovery.type=single-node -e bootstrap.memory_lock=false -e OPENSEARCH_INITIAL_ADMIN_PASSWORD='P@ss#w$rd' -e action.auto_create_index=true -e 'OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m' -e network.host=0.0.0.0 ghcr.io/utmstack/utmstack/opensearch:latest",
+		"docker run -d --name utmstack_migration_os -p 9200:9200 -v /utmstack/opensearch/data:/usr/share/opensearch/data -e cluster.name=utmstack -e node.name=node1 -e discovery.type=single-node -e bootstrap.memory_lock=false -e OPENSEARCH_INITIAL_ADMIN_PASSWORD='P@ss#w$rd' -e action.auto_create_index=true -e 'OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g' -e network.host=0.0.0.0 ghcr.io/utmstack/utmstack/opensearch:latest",
 	})
 }
 

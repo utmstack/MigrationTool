@@ -32,7 +32,7 @@ func (p *Phantom) runCommand() string {
 			"-e cluster.name=utmstack -e node.name=node1 -e discovery.type=single-node "+
 			"-e bootstrap.memory_lock=false "+
 			"-e OPENSEARCH_INITIAL_ADMIN_PASSWORD='%s' "+
-			"-e action.auto_create_index=true -e 'OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m' "+
+			"-e action.auto_create_index=true -e 'OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g' "+
 			"-e network.host=0.0.0.0 %s",
 		PhantomName, phantomVolume, p.pass, p.image,
 	)
