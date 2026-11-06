@@ -154,7 +154,8 @@ func (d *Deployer) DeployToAgent(ctx context.Context, agent *Agent) *DeployResul
 	}
 
 	if !strings.Contains(verifyDownloadResult.Output, "OK") {
-		result.Error = fmt.Errorf("download verification failed: file not found after download")
+		result.Error = fmt.Errorf("download verification failed: file not found after download (verify: %s | download out: %s)",
+			strings.TrimSpace(verifyDownloadResult.Output), strings.TrimSpace(downloadResult.Output))
 		result.Duration = time.Since(startTime)
 		return result
 	}

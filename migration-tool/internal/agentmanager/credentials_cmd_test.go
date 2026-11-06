@@ -16,17 +16,22 @@ func TestGetWriteCredentialsCommand(t *testing.T) {
 		{
 			name: "linux decodes into migration dir",
 			info: PlatformInfo{OS: "linux", Architecture: "amd64"},
-			want: "mkdir -p /opt/utmstack-migration && echo '" + b64 + "' | base64 -d > /opt/utmstack-migration/credentials.yml",
+			want: "mkdir -p /opt/utmstack-migration && echo '" + b64 + "' | base64 -d > /opt/utmstack-migration/credentials.yml && chmod 644 /opt/utmstack-migration/credentials.yml",
 		},
 		{
 			name: "windows decodes via certutil",
 			info: PlatformInfo{OS: "windows", Architecture: "amd64", IsWindows: true},
-			want: `echo ` + b64 + ` > C:\UTMStack\Migration\credentials.yml.b64 & certutil -decode C:\UTMStack\Migration\credentials.yml.b64 C:\UTMStack\Migration\credentials.yml`,
+			want: `del C:\UTMStack\Migration\credentials.yml >nul 2>&1 & echo ` + b64 + ` > C:\UTMStack\Migration\credentials.yml.b64 & certutil -decode C:\UTMStack\Migration\credentials.yml.b64 C:\UTMStack\Migration\credentials.yml`,
+		},
+		{
+			name: "windows arm64 uses arm64 filename",
+			info: PlatformInfo{OS: "windows", Architecture: "arm64", IsWindows: true},
+			want: `del C:\UTMStack\Migration\credentials.yml >nul 2>&1 & echo ` + b64 + ` > C:\UTMStack\Migration\credentials.yml.b64 & certutil -decode C:\UTMStack\Migration\credentials.yml.b64 C:\UTMStack\Migration\credentials.yml`,
 		},
 		{
 			name: "darwin decodes into migration dir",
 			info: PlatformInfo{OS: "darwin", Architecture: "arm64"},
-			want: "mkdir -p /opt/utmstack-migration && echo '" + b64 + "' | base64 -d > /opt/utmstack-migration/credentials.yml",
+			want: "mkdir -p /opt/utmstack-migration && echo '" + b64 + "' | base64 -d > /opt/utmstack-migration/credentials.yml && chmod 644 /opt/utmstack-migration/credentials.yml",
 		},
 	}
 

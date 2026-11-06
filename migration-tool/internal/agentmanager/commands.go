@@ -196,14 +196,18 @@ func GetWriteCredentialsCommand(info PlatformInfo, base64Content string) string 
 		// No `if not exist ... mkdir ...` prefix: cmd treats everything after
 		// `if` (including `&` chains) as the conditional body, so when the dir
 		// already exists the echo and certutil would silently never run.
+		// `del` first so a stale credentials.yml from a previous attempt does
+		// not make certutil fail with ERROR_FILE_EXISTS on retry.
 		return fmt.Sprintf(
-			`echo %s > %s & certutil -decode %s %s`,
-			base64Content, b64Path, b64Path, outPath,
+			`del %s >nul 2>&1 & echo %s > %s & certutil -decode %s %s`,
+			outPath, base64Content, b64Path, b64Path, outPath,
 		)
 	}
+	// chmod 644 so the file is not left with a restrictive umask from the
+	// V11 agent context; the bridge reads it later from the same user.
 	return fmt.Sprintf(
-		`mkdir -p %s && echo '%s' | base64 -d > %s/credentials.yml`,
-		dir, base64Content, dir,
+		`mkdir -p %s && echo '%s' | base64 -d > %s/credentials.yml && chmod 644 %s/credentials.yml`,
+		dir, base64Content, dir, dir,
 	)
 }
 
