@@ -19,7 +19,7 @@ import (
 const (
 	// V12 releases are GitHub prereleases, so 'releases/latest' resolves to a
 	// V11 tag. Pin the exact V12 the migration targets.
-	V12ReleaseTag        = "v12.0.1"
+	V12ReleaseTag        = "v12.0.2"
 	InstallerURL         = "https://github.com/utmstack/UTMStack/releases/download/" + V12ReleaseTag + "/installer"
 	SSHReconnectAttempts = 30
 	SSHReconnectDelay    = 10 * time.Second
@@ -230,7 +230,7 @@ func (u *Upgrader) RunUpgrade() error {
 		ui.Error(fmt.Sprintf("Import failed: %v", err))
 		return err
 	}
-	
+
 	// The import inserts agent rows with their V11 keys, but the V12
 	// agent-manager process started before they existed and keeps an in-memory
 	// key cache. Rotation is manual: the final summary tells the operator to
